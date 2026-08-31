@@ -1,5 +1,5 @@
 use crate::cli::KEY_LINES;
-use crate::constants::DELETE_CONFIRM_PHRASE;
+use crate::constants::{CHIP_GAP, DELETE_CONFIRM_PHRASE, FOOTER_H};
 use crate::delete::needs_typed_confirm;
 use crate::logo;
 use crate::size::{group_u64, human_bytes};
@@ -7,7 +7,8 @@ use crate::term::{Buffer, Cell, Rect, Rgb};
 use crate::tui::app::{Action, App, View};
 use crate::tui::sunburst::{self, Slice};
 use crate::tui::theme::{
-    self, category_color, ACCENT, BG, DANGER, MUTED, PALETTE, PANEL, SELECT_BG, TEXT, WARN,
+    self, category_color, ACCENT, BG, CHIP, DANGER, MUTED, PALETTE, PANEL, SELECT_BG, SMALLER,
+    TEXT, WARN,
 };
 
 pub struct HitMap {
@@ -113,7 +114,7 @@ fn draw_main(buf: &mut Buffer, app: &App) -> HitMap {
         width: buf.width,
         height: 1,
     };
-    let footer_h = 4u16.min(buf.height);
+    let footer_h = FOOTER_H.min(buf.height);
     let body = Rect {
         x: 0,
         y: 1,
@@ -400,96 +401,253 @@ fn draw_collector(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
 }
 
 fn draw_footer(buf: &mut Buffer, app: &App, area: Rect) -> Vec<(Rect, Action)> {
-    let info_y = area.y;
-    if let Some(tree) = app.tree() {
-        let n = tree.get(tree.node_at(&app.cwd));
-        let mut x = buf.print(area.x + 1, info_y, "used ", MUTED, BG);
-        x = buf.print_styled(x, info_y, &human_bytes(n.used), TEXT, BG, true);
-        x = buf.print(x, info_y, "  ·  apparent ", MUTED, BG);
-        x = buf.print_styled(x, info_y, &human_bytes(n.apparent), TEXT, BG, true);
-        let stats = format!(
-            "  ·  {} files · {} dirs · {} errors · {} hardlinks skipped  ",
-            group_u64(tree.stats.files),
-            group_u64(tree.stats.dirs),
-            group_u64(tree.stats.errors),
-            group_u64(tree.stats.hardlinks_deduped)
-        );
-        x = buf.print(x, info_y, &stats, MUTED, BG);
-        if let Some(hint) = app.not_root_hint() {
-            buf.print(x, info_y, &hint, WARN, BG);
-        }
+    if area.height == 0 {
+        return Vec::new();
     }
+    draw_footer_stats(buf, app, area.y, area.width);
 
     let mut buttons = Vec::new();
-    let button_y = area.y + 1;
-    let mut labels: Vec<(Action, String)> = Vec::new();
-    if matches!(app.view, View::Collector) && !app.collector.is_empty() {
-        labels.push((Action::ConfirmDelete, " Confirm delete ".into()));
+    if area.height >= 2 {
+        buttons = draw_footer_chrome(buf, app, area.y + 1, area.width);
     }
-    labels.push((Action::Findings, " Temp & cache ".into()));
-    labels.push((
-        Action::Collector,
-        format!(" Collector ({}) ", app.collector.len()),
-    ));
-    labels.push((Action::Export, " Export CSV ".into()));
-    labels.push((Action::Mark, " Mark ".into()));
-    labels.push((Action::Back, " Back ".into()));
-    labels.push((Action::Help, " Keys ".into()));
-    labels.push((Action::Quit, " Quit ".into()));
+    if area.height >= 3 {
+        draw_footer_path(buf, app, area.y + 2, area.width);
+    }
+    buttons
+}
 
-    let mut x = area.x + 1;
-    for (action, label) in labels {
-        let w = label.chars().count() as u16;
-        if x + w >= area.right() {
+fn draw_footer_stats(buf: &mut Buffer, app: &App, y: u16, width: u16) {
+    let Some(tree) = app.tree() else {
+        return;
+    };
+    let n = tree.get(tree.node_at(&app.cwd));
+    let mut x = buf.print(1, y, "used ", MUTED, BG);
+    x = buf.print_styled(x, y, &human_bytes(n.used), TEXT, BG, true);
+    x = buf.print(x, y, "  ·  apparent ", MUTED, BG);
+    x = buf.print_styled(x, y, &human_bytes(n.apparent), TEXT, BG, true);
+    let stats = format!(
+        "  ·  {} files · {} dirs · {} errors · {} hardlinks skipped  ",
+        group_u64(tree.stats.files),
+        group_u64(tree.stats.dirs),
+        group_u64(tree.stats.errors),
+        group_u64(tree.stats.hardlinks_deduped)
+    );
+    x = buf.print(x, y, &stats, MUTED, BG);
+    if let Some(hint) = app.not_root_hint() {
+        buf.print(
+            x,
+            y,
+            &truncate(&hint, width.saturating_sub(x) as usize),
+            WARN,
+            BG,
+        );
+    }
+}
+
+struct Chip {
+    action: Action,
+    label: String,
+    /// Lower is kept longer when the row overflows.
+    keep: u8,
+}
+
+fn footer_chips(app: &App) -> Vec<Chip> {
+    let mut chips = Vec::new();
+    if matches!(app.view, View::Collector) && !app.collector.is_empty() {
+        chips.push(Chip {
+            action: Action::ConfirmDelete,
+            label: " Confirm delete ".into(),
+            keep: 0,
+        });
+    }
+    chips.push(Chip {
+        action: Action::Findings,
+        label: " Temp & cache ".into(),
+        keep: 1,
+    });
+    chips.push(Chip {
+        action: Action::Collector,
+        label: format!(" Collector ({}) ", app.collector.len()),
+        keep: 2,
+    });
+    chips.push(Chip {
+        action: Action::Export,
+        label: " Export CSV ".into(),
+        keep: 7,
+    });
+    chips.push(Chip {
+        action: Action::Mark,
+        label: " Mark ".into(),
+        keep: 5,
+    });
+    chips.push(Chip {
+        action: Action::Back,
+        label: " Back ".into(),
+        keep: 4,
+    });
+    chips.push(Chip {
+        action: Action::Help,
+        label: " Keys ".into(),
+        keep: 6,
+    });
+    chips.push(Chip {
+        action: Action::Quit,
+        label: " Quit ".into(),
+        keep: 3,
+    });
+    chips
+}
+
+fn chips_width(chips: &[Chip]) -> u16 {
+    if chips.is_empty() {
+        return 0;
+    }
+    let labels: u16 = chips.iter().map(|c| c.label.chars().count() as u16).sum();
+    labels + CHIP_GAP * (chips.len() as u16 - 1)
+}
+
+fn fit_chips(mut chips: Vec<Chip>, width: u16) -> Vec<Chip> {
+    while chips.len() > 1 && chips_width(&chips) > width {
+        let drop_i = chips
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, c)| c.keep)
+            .map(|(i, _)| i)
+            .unwrap_or(chips.len() - 1);
+        chips.remove(drop_i);
+    }
+    chips
+}
+
+fn chip_is_active(app: &App, action: Action) -> bool {
+    matches!(
+        (&app.view, action),
+        (View::Findings, Action::Findings) | (View::Collector, Action::Collector)
+    )
+}
+
+fn draw_footer_chrome(buf: &mut Buffer, app: &App, y: u16, width: u16) -> Vec<(Rect, Action)> {
+    let budget = width.saturating_sub(2);
+    let chips = fit_chips(footer_chips(app), budget);
+    let mut buttons = Vec::new();
+    let mut x = 1u16;
+    for chip in &chips {
+        let w = chip.label.chars().count() as u16;
+        if x.saturating_add(w) > width {
             break;
         }
-        let (fg, bg_c) = if action == Action::ConfirmDelete {
-            (BG, DANGER)
+        let (fg, bg_c, bold) = if chip.action == Action::ConfirmDelete {
+            (BG, DANGER, true)
+        } else if chip_is_active(app, chip.action) {
+            (BG, ACCENT, true)
         } else {
-            (TEXT, PANEL)
+            (TEXT, CHIP, false)
         };
-        buf.print_styled(
-            x,
-            button_y,
-            &label,
-            fg,
-            bg_c,
-            action == Action::ConfirmDelete,
-        );
+        buf.print_styled(x, y, &chip.label, fg, bg_c, bold);
         buttons.push((
             Rect {
                 x,
-                y: button_y,
+                y,
                 width: w,
                 height: 1,
             },
-            action,
+            chip.action,
         ));
-        x = x.saturating_add(w + 1);
+        x = x.saturating_add(w + CHIP_GAP);
     }
 
-    let keys = match app.view {
-        View::Collector => {
-            "j/k move  ·  Space unmark  ·  x confirm  ·  h/⌫ back  ·  e export  ·  ? help  ·  q quit"
-        }
-        View::Findings => {
-            "j/k move  ·  Enter jump  ·  Space mark  ·  h/⌫ back  ·  ? help  ·  q quit"
-        }
-        _ => "j/k/↑↓ select  ·  Enter drill  ·  Space mark  ·  ? help  ·  q quit",
-    };
-    let line = if app.status.is_empty() {
-        format!("  {keys}")
+    let hints = footer_hints(app);
+    let fallback = vec![("?", "help")];
+    let chosen = if hints_fit(&hints, width, x) {
+        hints
+    } else if hints_fit(&fallback, width, x) {
+        fallback
     } else {
-        format!("  {}  ·  {keys}", app.status)
+        Vec::new()
     };
+    if !chosen.is_empty() {
+        let hint_x = width.saturating_sub(hints_width(&chosen) + 1);
+        draw_hints(buf, hint_x, y, &chosen);
+    }
+    buttons
+}
+
+fn hints_fit(hints: &[(&str, &str)], width: u16, chips_end: u16) -> bool {
+    let hint_w = hints_width(hints);
+    if hint_w == 0 {
+        return false;
+    }
+    let hint_x = width.saturating_sub(hint_w + 1);
+    hint_x >= chips_end.saturating_add(2)
+}
+
+fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    match app.view {
+        View::Collector => vec![
+            ("j/k", "move"),
+            ("Space", "unmark"),
+            ("x", "confirm"),
+            ("?", "help"),
+        ],
+        View::Findings => vec![
+            ("j/k", "move"),
+            ("Enter", "jump"),
+            ("Space", "mark"),
+            ("?", "help"),
+        ],
+        _ => vec![
+            ("j/k", "move"),
+            ("Enter", "drill"),
+            ("Space", "mark"),
+            ("?", "help"),
+        ],
+    }
+}
+
+fn hints_width(hints: &[(&str, &str)]) -> u16 {
+    if hints.is_empty() {
+        return 0;
+    }
+    let mut w = 0u16;
+    for (i, (key, verb)) in hints.iter().enumerate() {
+        if i > 0 {
+            w = w.saturating_add(3); // " · "
+        }
+        w = w
+            .saturating_add(key.chars().count() as u16)
+            .saturating_add(1)
+            .saturating_add(verb.chars().count() as u16);
+    }
+    w
+}
+
+fn draw_hints(buf: &mut Buffer, mut x: u16, y: u16, hints: &[(&str, &str)]) {
+    for (i, (key, verb)) in hints.iter().enumerate() {
+        if i > 0 {
+            x = buf.print(x, y, " · ", SMALLER, BG);
+        }
+        x = buf.print_styled(x, y, key, TEXT, BG, true);
+        x = buf.print(x, y, " ", MUTED, BG);
+        x = buf.print(x, y, verb, MUTED, BG);
+    }
+}
+
+fn draw_footer_path(buf: &mut Buffer, app: &App, y: u16, width: u16) {
+    let line = if !app.status.is_empty() {
+        app.status.clone()
+    } else {
+        app.selected_path().unwrap_or_default()
+    };
+    if line.is_empty() {
+        return;
+    }
     buf.print(
-        area.x,
-        area.y + 2,
-        &truncate(&line, area.width as usize),
+        1,
+        y,
+        &truncate(&line, width.saturating_sub(2) as usize),
         MUTED,
         BG,
     );
-    buttons
 }
 
 fn draw_confirm_modal(buf: &mut Buffer, app: &App, hits: &mut HitMap) {

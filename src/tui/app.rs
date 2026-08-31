@@ -95,6 +95,22 @@ impl App {
         kids.get(self.selected).copied()
     }
 
+    /// Node under the cursor in the current view (list or collector).
+    pub fn selected_node_id(&self) -> Option<usize> {
+        match self.view {
+            View::Findings => self.finding_ids().get(self.findings_selected).copied(),
+            View::Collector => self.collector.items().get(self.selected).map(|i| i.node_id),
+            View::Browse | View::Confirm { .. } => self.selected_id(),
+            _ => None,
+        }
+    }
+
+    pub fn selected_path(&self) -> Option<String> {
+        let tree = self.tree.as_ref()?;
+        let id = self.selected_node_id()?;
+        Some(tree.get(id).path.display().to_string())
+    }
+
     pub fn clamp_selection(&mut self) {
         let n = match self.view {
             View::Findings => self.finding_ids().len(),
@@ -217,15 +233,13 @@ impl App {
     }
 
     pub fn toggle_mark_selected(&mut self) {
+        if !matches!(self.view, View::Browse | View::Findings | View::Collector) {
+            return;
+        }
         let Some(tree) = self.tree.as_ref() else {
             return;
         };
-        let id = match self.view {
-            View::Findings => self.finding_ids().get(self.findings_selected).copied(),
-            View::Collector => self.collector.items().get(self.selected).map(|i| i.node_id),
-            View::Browse => self.selected_id(),
-            _ => None,
-        };
+        let id = self.selected_node_id();
         let Some(id) = id else {
             return;
         };
@@ -266,8 +280,7 @@ impl App {
         self.view = View::Findings;
         self.findings_selected = 0;
         self.list_offset = 0;
-        let n = self.finding_ids().len();
-        self.status = format!("{n} temp/cache/log hits — nothing deleted");
+        self.status.clear();
     }
 
     pub fn open_collector(&mut self) {
@@ -275,11 +288,7 @@ impl App {
         self.view = View::Collector;
         self.selected = 0;
         self.list_offset = 0;
-        self.status = format!(
-            "collector · {} · {}",
-            self.collector.len(),
-            human_bytes(self.collector.total_bytes())
-        );
+        self.status.clear();
     }
 
     pub fn begin_confirm(&mut self) {

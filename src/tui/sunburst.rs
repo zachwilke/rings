@@ -1,4 +1,4 @@
-//! Polar sunburst drawn with half-block cells into the term buffer.
+//! Polar sunburst drawn with Braille 2×4 dots into the term buffer.
 
 use std::f64::consts::TAU;
 
@@ -176,12 +176,28 @@ fn polar(dx: f64, dy: f64, hole: f64, rings: usize) -> Option<(usize, f64)> {
     Some((ring.min(rings - 1), angle))
 }
 
-/// Disk geometry inside a cell rect. Half-block pixels are roughly square
-/// (a cell is ~1:2), so a true circle uses one radius in (cols, 2×rows)
+/// Braille cell: 2 dots wide × 4 tall. Same 1:2 aspect as half-blocks, 4× the samples.
+const BRAILLE_COLS: usize = 2;
+const BRAILLE_ROWS: usize = 4;
+
+/// Unicode Braille bits in btop order (dots 1–8):
+/// ```text
+/// 1 4
+/// 2 5
+/// 3 6
+/// 7 8
+/// ```
+const BRAILLE_DOT: [[u8; BRAILLE_COLS]; BRAILLE_ROWS] =
+    [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
+
+const BRAILLE_BASE: u32 = 0x2800;
+
+/// Disk geometry inside a cell rect. Braille pixels are roughly square
+/// (a cell is 2×4), so a true circle uses one radius in (2×cols, 4×rows)
 /// pixel space. Hole and ring count are derived from that radius so paint
 /// and hit testing stay on the same polar map.
 struct Geometry {
-    cx: f64,
+    cx_px: f64,
     cy_px: f64,
     radius: f64,
     hole: f64,
@@ -202,13 +218,13 @@ fn geometry(area: Rect) -> Option<Geometry> {
     if area.width < 6 || area.height < 4 {
         return None;
     }
-    let w = area.width as f64;
-    let h_px = (area.height as f64) * 2.0;
-    let radius = ((w.min(h_px)) / 2.0 - SUNBURST_MARGIN).max(2.0);
+    let w_px = area.width as f64 * BRAILLE_COLS as f64;
+    let h_px = area.height as f64 * BRAILLE_ROWS as f64;
+    let radius = ((w_px.min(h_px)) / 2.0 - SUNBURST_MARGIN).max(4.0);
     let hole = hole_for(radius);
     let rings = rings_from_radius(radius, hole);
     Some(Geometry {
-        cx: area.x as f64 + w / 2.0,
+        cx_px: w_px / 2.0,
         cy_px: h_px / 2.0,
         radius,
         hole,
@@ -216,48 +232,117 @@ fn geometry(area: Rect) -> Option<Geometry> {
     })
 }
 
-fn cell_norm(geo: &Geometry, x: f64, y_px: f64) -> (f64, f64) {
-    let dx = (x - geo.cx) / geo.radius;
-    let dy = (y_px - geo.cy_px) / geo.radius;
-    (dx, dy)
+fn norm(geo: &Geometry, px: f64, py: f64) -> (f64, f64) {
+    ((px - geo.cx_px) / geo.radius, (py - geo.cy_px) / geo.radius)
+}
+
+fn sample_px(slices: &[Slice], geo: &Geometry, px: f64, py: f64) -> Option<Rgb> {
+    let (dx, dy) = norm(geo, px, py);
+    sample(slices, geo, dx, dy)
+}
+
+fn slice_at_px<'a>(
+    slices: &'a [Slice],
+    geo: &Geometry,
+    px: f64,
+    py: f64,
+    allow_grouped: bool,
+) -> Option<&'a Slice> {
+    let (dx, dy) = norm(geo, px, py);
+    let (ring, angle) = polar(dx, dy, geo.hole, geo.rings)?;
+    slice_at(slices, ring, angle, allow_grouped)
 }
 
 /// Map a terminal cell to a slice for mouse hits.
+/// Majority of the 8 braille samples, same polar map as paint. Grouped leftovers stay unclickable.
 pub fn hit_slice<'a>(slices: &'a [Slice], area: Rect, x: u16, y: u16) -> Option<&'a Slice> {
     if !area.contains(x, y) {
         return None;
     }
     let geo = geometry(area)?;
-    let (dx, dy) = cell_norm(&geo, x as f64 + 0.5, ((y - area.y) as f64) * 2.0 + 1.0);
-    let (ring, angle) = polar(dx, dy, geo.hole, geo.rings)?;
-    slice_at(slices, ring, angle, false)
+    majority_slice(slices, &geo, x - area.x, y - area.y, false)
 }
 
-/// Paint with half blocks: each cell is two vertical pixels.
+fn majority_slice<'a>(
+    slices: &'a [Slice],
+    geo: &Geometry,
+    tx: u16,
+    ty: u16,
+    allow_grouped: bool,
+) -> Option<&'a Slice> {
+    let mut counts: Vec<(&'a Slice, usize)> = Vec::new();
+    for row in 0..BRAILLE_ROWS {
+        for col in 0..BRAILLE_COLS {
+            let px = tx as f64 * BRAILLE_COLS as f64 + col as f64 + 0.5;
+            let py = ty as f64 * BRAILLE_ROWS as f64 + row as f64 + 0.5;
+            let Some(s) = slice_at_px(slices, geo, px, py, allow_grouped) else {
+                continue;
+            };
+            if let Some(slot) = counts.iter_mut().find(|(c, _)| {
+                c.node == s.node && c.ring == s.ring && c.start == s.start && c.end == s.end
+            }) {
+                slot.1 += 1;
+            } else {
+                counts.push((s, 1));
+            }
+        }
+    }
+    counts.into_iter().max_by_key(|(_, n)| *n).map(|(s, _)| s)
+}
+
+/// Paint with Braille: each cell is an 8-dot 2×4 pixel grid.
 pub fn render(buf: &mut Buffer, area: Rect, slices: &[Slice]) {
     let Some(geo) = geometry(area) else {
         return;
     };
     for ty in 0..area.height {
         for tx in 0..area.width {
-            let x = area.x + tx;
-            let y = area.y + ty;
-            let (dx, _) = cell_norm(&geo, x as f64 + 0.5, 0.0);
-            let upper = sample(
-                slices,
-                &geo,
-                dx,
-                ((ty * 2) as f64 + 0.5 - geo.cy_px) / geo.radius,
-            );
-            let lower = sample(
-                slices,
-                &geo,
-                dx,
-                ((ty * 2 + 1) as f64 + 0.5 - geo.cy_px) / geo.radius,
-            );
-            paint_half(buf, x, y, upper, lower);
+            let mut dots = [[None; BRAILLE_COLS]; BRAILLE_ROWS];
+            for row in 0..BRAILLE_ROWS {
+                for col in 0..BRAILLE_COLS {
+                    let px = tx as f64 * BRAILLE_COLS as f64 + col as f64 + 0.5;
+                    let py = ty as f64 * BRAILLE_ROWS as f64 + row as f64 + 0.5;
+                    dots[row][col] = sample_px(slices, &geo, px, py);
+                }
+            }
+            paint_braille(buf, area.x + tx, area.y + ty, dots);
         }
     }
+}
+
+fn braille_char(bits: u8) -> char {
+    char::from_u32(BRAILLE_BASE | u32::from(bits)).unwrap_or(' ')
+}
+
+/// True when `ch` is a Braille sunburst glyph (U+2800..U+28FF).
+#[cfg(test)]
+pub fn is_braille(ch: char) -> bool {
+    (BRAILLE_BASE..=BRAILLE_BASE + 0xFF).contains(&(ch as u32))
+}
+
+/// Rasterize one terminal cell to a 2-wide × 4-tall pixel grid for PPM dumps.
+/// Braille uses the 8 dots; leftover half-block glyphs (logo) stay compatible.
+#[cfg(test)]
+pub fn raster_cell(cell: Cell) -> [[Rgb; BRAILLE_COLS]; BRAILLE_ROWS] {
+    if is_braille(cell.ch) {
+        let bits = (cell.ch as u32).saturating_sub(BRAILLE_BASE) as u8;
+        let mut out = [[cell.bg; BRAILLE_COLS]; BRAILLE_ROWS];
+        for row in 0..BRAILLE_ROWS {
+            for col in 0..BRAILLE_COLS {
+                if bits & BRAILLE_DOT[row][col] != 0 {
+                    out[row][col] = cell.fg;
+                }
+            }
+        }
+        return out;
+    }
+    let (top, bot) = match cell.ch {
+        '█' => (cell.fg, cell.fg),
+        '▀' => (cell.fg, cell.bg),
+        '▄' => (cell.bg, cell.fg),
+        _ => (cell.bg, cell.bg),
+    };
+    [[top, top], [top, top], [bot, bot], [bot, bot]]
 }
 
 /// Deepest slice at this angle on `ring`, or an inner slice that continues
@@ -321,35 +406,59 @@ fn ang_dist(a: f64, b: f64) -> f64 {
     d.min(1.0 - d)
 }
 
-fn paint_half(buf: &mut Buffer, x: u16, y: u16, upper: Option<Rgb>, lower: Option<Rgb>) {
-    let cell = match (upper, lower) {
-        (Some(u), Some(l)) if u == l => Cell {
-            ch: '█',
-            fg: u,
-            bg: BG,
-            bold: false,
-        },
-        (Some(u), Some(l)) => Cell {
-            ch: '▀',
-            fg: u,
-            bg: l,
-            bold: false,
-        },
-        (Some(u), None) => Cell {
-            ch: '▀',
-            fg: u,
-            bg: BG,
-            bold: false,
-        },
-        (None, Some(l)) => Cell {
-            ch: '▄',
-            fg: l,
-            bg: BG,
-            bold: false,
-        },
-        (None, None) => return,
+fn paint_braille(
+    buf: &mut Buffer,
+    x: u16,
+    y: u16,
+    dots: [[Option<Rgb>; BRAILLE_COLS]; BRAILLE_ROWS],
+) {
+    let mut colors: Vec<(Rgb, usize)> = Vec::new();
+    let mut on_disk = 0usize;
+    for row in dots.iter() {
+        for sample in row.iter() {
+            let Some(c) = *sample else {
+                continue;
+            };
+            on_disk += 1;
+            if let Some(slot) = colors.iter_mut().find(|(k, _)| *k == c) {
+                slot.1 += 1;
+            } else {
+                colors.push((c, 1));
+            }
+        }
+    }
+    if on_disk == 0 {
+        return;
+    }
+    colors.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0 .0.cmp(&b.0 .0)));
+    let fg = colors[0].0;
+    let all_on = on_disk == BRAILLE_COLS * BRAILLE_ROWS;
+    let bg = if colors.len() == 2 && all_on {
+        colors[1].0
+    } else {
+        BG
     };
-    buf.set_cell(x, y, cell);
+    let mut bits = 0u8;
+    for row in 0..BRAILLE_ROWS {
+        for col in 0..BRAILLE_COLS {
+            if dots[row][col] == Some(fg) {
+                bits |= BRAILLE_DOT[row][col];
+            }
+        }
+    }
+    if bits == 0 {
+        return;
+    }
+    buf.set_cell(
+        x,
+        y,
+        Cell {
+            ch: braille_char(bits),
+            fg,
+            bg,
+            bold: false,
+        },
+    );
 }
 
 #[cfg(test)]
@@ -486,36 +595,28 @@ mod tests {
         (buf, slices, area)
     }
 
-    /// Half-block buffer → binary PPM (each cell is 1×2 pixels, scaled up).
+    /// Braille buffer → binary PPM (each cell is 2×4 pixels, scaled up).
     fn write_ppm(buf: &Buffer, path: &Path, scale: u32) {
-        let w = buf.width as u32 * scale;
-        let h = buf.height as u32 * 2 * scale;
+        let w = buf.width as u32 * BRAILLE_COLS as u32 * scale;
+        let h = buf.height as u32 * BRAILLE_ROWS as u32 * scale;
         let mut px = vec![0u8; (w * h * 3) as usize];
         for y in 0..buf.height {
             for x in 0..buf.width {
                 let cell = buf.get(x, y).cloned().unwrap_or(Cell::blank(BG));
-                let (top, bot) = match cell.ch {
-                    '█' => (cell.fg, cell.fg),
-                    '▀' => (cell.fg, cell.bg),
-                    '▄' => (cell.bg, cell.fg),
-                    _ => (cell.bg, cell.bg),
-                };
-                for sy in 0..scale {
-                    for sx in 0..scale {
-                        put(
-                            &mut px,
-                            w,
-                            x as u32 * scale + sx,
-                            y as u32 * 2 * scale + sy,
-                            top,
-                        );
-                        put(
-                            &mut px,
-                            w,
-                            x as u32 * scale + sx,
-                            y as u32 * 2 * scale + scale + sy,
-                            bot,
-                        );
+                let dots = raster_cell(cell);
+                for row in 0..BRAILLE_ROWS {
+                    for col in 0..BRAILLE_COLS {
+                        for sy in 0..scale {
+                            for sx in 0..scale {
+                                put(
+                                    &mut px,
+                                    w,
+                                    (x as u32 * BRAILLE_COLS as u32 + col as u32) * scale + sx,
+                                    (y as u32 * BRAILLE_ROWS as u32 + row as u32) * scale + sy,
+                                    dots[row][col],
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -556,8 +657,8 @@ mod tests {
         let area = dump_area();
         let rings = rings_for(area);
         assert!(
-            (6..=8).contains(&rings),
-            "56×24 panel should hold 6–8 rings, got {rings}"
+            (8..=10).contains(&rings),
+            "56×24 panel should hold 8–10 rings, got {rings}"
         );
         let slices = build_slices(&tree, 0, false, None, rings);
         let max_ring = slices.iter().map(|s| s.ring).max().unwrap_or(0);
@@ -570,6 +671,29 @@ mod tests {
             deep.is_some(),
             "deep child `debug` should appear as its own wedge"
         );
+    }
+
+    #[test]
+    fn braille_glyph_uses_unicode_dot_order() {
+        assert_eq!(braille_char(0x01), '\u{2801}', "dot 1 is top-left");
+        assert_eq!(braille_char(0x08), '\u{2808}', "dot 4 is top-right");
+        assert_eq!(braille_char(0x40), '\u{2840}', "dot 7 is bottom-left");
+        assert_eq!(braille_char(0x80), '\u{2880}', "dot 8 is bottom-right");
+        assert_eq!(braille_char(0xFF), '\u{28FF}', "all eight dots");
+        let dots = [
+            [Some(PALETTE[0]), None],
+            [None, None],
+            [None, None],
+            [None, Some(PALETTE[0])],
+        ];
+        let mut buf = Buffer::new(1, 1, BG);
+        paint_braille(&mut buf, 0, 0, dots);
+        let ch = buf.get(0, 0).unwrap().ch;
+        assert_eq!(ch, braille_char(0x01 | 0x80), "top-left + bottom-right");
+        let raster = raster_cell(*buf.get(0, 0).unwrap());
+        assert_eq!(raster[0][0], PALETTE[0]);
+        assert_eq!(raster[3][1], PALETTE[0]);
+        assert_eq!(raster[0][1], BG);
     }
 
     #[test]
@@ -650,30 +774,17 @@ mod tests {
         for y in area.y..area.bottom() {
             for x in area.x..area.right() {
                 let cell = buf.get(x, y).unwrap();
-                if cell.ch == ' ' {
+                if !is_braille(cell.ch) {
                     continue;
                 }
                 painted += 1;
-                let (dx, dy) = cell_norm(&geo, x as f64 + 0.5, ((y - area.y) as f64) * 2.0 + 1.0);
-                let Some((ring, angle)) = polar(dx, dy, geo.hole, geo.rings) else {
+                let Some(under) = majority_slice(&slices, &geo, x - area.x, y - area.y, false)
+                else {
                     continue;
                 };
-                let under = slices
-                    .iter()
-                    .rev()
-                    .find(|s| s.ring == ring && angle >= s.start && angle < s.end);
-                let Some(under) = under else {
-                    continue;
-                };
-                if under.grouped {
-                    continue;
-                }
                 let hit =
                     hit_slice(&slices, area, x, y).expect("painted non-grouped cell must hit");
-                assert_eq!(
-                    hit.node, under.node,
-                    "hit/paint mismatch at ({x},{y}) ring {ring} angle {angle:.3}"
-                );
+                assert_eq!(hit.node, under.node, "hit/paint mismatch at ({x},{y})");
                 hits += 1;
             }
         }
@@ -733,7 +844,7 @@ mod tests {
     #[test]
     fn disk_fills_the_panel() {
         let (buf, _, area) = render_fixture(None);
-        let painted = buf.text().chars().filter(|c| "█▀▄".contains(*c)).count();
+        let painted = buf.text().chars().filter(|c| is_braille(*c)).count();
         let cells = area.width as usize * area.height as usize;
         assert!(
             painted * 100 / cells > 50,
@@ -744,7 +855,7 @@ mod tests {
     #[test]
     fn dump_fixture_ppm() {
         let (buf, slices, _) = render_fixture(Some(11));
-        let painted = buf.text().chars().filter(|c| "█▀▄".contains(*c)).count();
+        let painted = buf.text().chars().filter(|c| is_braille(*c)).count();
         eprintln!("painted cells {painted}");
         let dir = std::env::temp_dir();
         let path = dir.join("rings-sunburst-current.ppm");
