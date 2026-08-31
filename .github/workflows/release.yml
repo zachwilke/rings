@@ -34,35 +34,29 @@ jobs:
           xz -k -9 dist/rings-x86_64-linux-musl
           tar -C dist -czf dist/rings-v0.1.0-x86_64-linux-musl.tar.gz rings-x86_64-linux-musl
           ls -l dist
+          cat > dist/notes.md << 'EOF'
+          Tiny DaisyDisk-style disk map for Linux servers. One static musl binary, no runtime deps.
+
+          Download is about 245 KB xz (binary about 585 KB). Built for a machine that is already almost full.
+
+          curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.0/rings-x86_64-linux-musl.xz | xz -d > rings
+          chmod +x rings
+          sudo ./rings /
+
+          Colorful sunburst TUI, mouse and keyboard. sudo full-disk scan. Temp and cache finder (never auto-deletes). Delete collector with confirm (type DELETE as root). CSV export: rings --csv findings.csv /
+          EOF
 
       - name: Publish v0.1.0
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.1.0 --repo "${{ github.repository }}" >/dev/null 2>&1; then
+          if gh release view v0.1.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "v0.1.0 already exists"
             exit 0
           fi
           gh release create v0.1.0 \
             dist/rings-x86_64-linux-musl.xz \
             dist/rings-v0.1.0-x86_64-linux-musl.tar.gz \
-            --repo "${{ github.repository }}" \
+            --repo "$GITHUB_REPOSITORY" \
             --title "v0.1.0" \
-            --notes "$(cat <<'EOF'
-Tiny DaisyDisk-style disk map for Linux servers. One static musl binary, no runtime deps.
-
-Download is about 245 KB xz (binary about 585 KB). Built for a machine that is already almost full.
-
-```bash
-curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.0/rings-x86_64-linux-musl.xz | xz -d > rings
-chmod +x rings
-sudo ./rings /
-```
-
-- Colorful sunburst TUI, mouse and keyboard
-- sudo full-disk scan
-- Temp and cache finder (never auto-deletes)
-- Delete collector with confirm (type DELETE as root)
-- CSV export: `rings --csv findings.csv /`
-EOF
-)"
+            --notes-file dist/notes.md
