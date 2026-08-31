@@ -49,6 +49,30 @@ fn assert_fail_contains(os: &str, arch: &str, needle: &str) {
 }
 
 #[cfg(unix)]
+fn print_next(dest: &str) -> std::process::Output {
+    Command::new("sh")
+        .arg(repo_root().join("install.sh"))
+        .args(["--print-next", dest])
+        .output()
+        .expect("run install.sh --print-next")
+}
+
+#[cfg(unix)]
+fn assert_next(dest: &str, want: &str) {
+    let out = print_next(dest);
+    assert!(
+        out.status.success(),
+        "expected success for --print-next {dest}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        want,
+        "--print-next {dest}"
+    );
+}
+
+#[cfg(unix)]
 #[test]
 fn install_sh_syntax() {
     let status = Command::new("sh")
@@ -57,6 +81,34 @@ fn install_sh_syntax() {
         .status()
         .expect("sh -n install.sh");
     assert!(status.success(), "sh -n install.sh failed");
+}
+
+#[cfg(unix)]
+#[test]
+fn install_sh_dash_syntax() {
+    let result = Command::new("dash")
+        .arg("-n")
+        .arg(repo_root().join("install.sh"))
+        .status();
+    match result {
+        Ok(status) => assert!(status.success(), "dash -n install.sh failed"),
+        Err(_) => {
+            // dash is optional (present on Debian/Ubuntu; often absent on macOS).
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn install_sh_next_uses_full_path_off_sudo_secure_path() {
+    assert_next(
+        "/home/zach/.local/bin/rings",
+        "next: sudo /home/zach/.local/bin/rings /",
+    );
+    assert_next("/opt/rings/rings", "next: sudo /opt/rings/rings /");
+    assert_next("/usr/local/bin/rings", "next: sudo rings /");
+    assert_next("/usr/bin/rings", "next: sudo rings /");
+    assert_next("/bin/rings", "next: sudo rings /");
 }
 
 #[cfg(unix)]

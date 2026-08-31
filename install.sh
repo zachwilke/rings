@@ -9,6 +9,7 @@
 #   Darwin   x86_64         rings-x86_64-apple-darwin.xz  (Intel, including Rosetta)
 #   Windows  AMD64|x86_64   rings-x86_64-pc-windows-msvc.exe.zip
 #   Windows  ARM64          (no asset — fail)
+# Dest: RING_PREFIX, else /usr/local/bin (writable or one sudo copy), else ~/.local/bin.
 set -eu
 
 REPO="zachwilke/rings"
@@ -54,9 +55,38 @@ rings_asset() {
 	esac
 }
 
+# Typical sudo secure_path: /usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bin
+# ~/.local/bin is never on it — `sudo rings` will not find a user-local binary.
+rings_on_sudo_path() {
+	dir=$(dirname "$1")
+	case "$dir" in
+	/usr/local/bin | /usr/bin | /bin | /usr/sbin | /sbin | /usr/local/sbin)
+		return 0
+		;;
+	*)
+		return 1
+		;;
+	esac
+}
+
+rings_next() {
+	dest=$1
+	if rings_on_sudo_path "$dest"; then
+		echo "next: sudo rings /"
+	else
+		echo "next: sudo $dest /"
+	fi
+}
+
 if [ "${1:-}" = "--print-asset" ]; then
 	[ $# -eq 3 ] || rings_die "usage: install.sh --print-asset OS ARCH"
 	rings_asset "$2" "$3"
+	exit 0
+fi
+
+if [ "${1:-}" = "--print-next" ]; then
+	[ $# -eq 2 ] || rings_die "usage: install.sh --print-next DEST"
+	rings_next "$2"
 	exit 0
 fi
 
@@ -148,28 +178,117 @@ fi
 [ -s "$bin" ] || rings_die "decompressed binary is empty"
 chmod +x "$bin"
 
+# Place $1 at /usr/local/bin/rings. Optional $2 is a sudo flag (e.g. -n).
+rings_sudo_copy() {
+	src=$1
+	nflag=${2:-}
+	if ! have_cmd sudo; then
+		return 1
+	fi
+	if have_cmd install; then
+		if [ -d /usr/local/bin ]; then
+			if sudo $nflag install -m 755 "$src" /usr/local/bin/rings; then
+				return 0
+			fi
+			return 1
+		fi
+		if sudo $nflag sh -c 'mkdir -p /usr/local/bin && install -m 755 "$1" /usr/local/bin/rings' _ "$src"; then
+			return 0
+		fi
+		return 1
+	fi
+	if sudo $nflag sh -c 'mkdir -p /usr/local/bin && cp "$1" /usr/local/bin/rings && chmod 755 /usr/local/bin/rings' _ "$src"; then
+		return 0
+	fi
+	return 1
+}
+
+# Confirm (TTY only) then copy with sudo. Never sudo the GitHub download.
+rings_try_usr_local() {
+	src=$1
+	if [ -t 0 ]; then
+		printf 'Install to /usr/local/bin so sudo rings works? [Y/n] ' >&2
+		ans=
+		read -r ans || ans=n
+		case "$ans" in
+		'' | [Yy] | [Yy][Ee][Ss]) ;;
+		*) return 1 ;;
+		esac
+	fi
+	if ! have_cmd sudo; then
+		return 1
+	fi
+	# Cached credentials (curl | sh has no stdin TTY).
+	if sudo -n true >/dev/null 2>&1; then
+		if rings_sudo_copy "$src" -n; then
+			return 0
+		fi
+	fi
+	# sudo can prompt on /dev/tty even when this script's stdin is the pipe.
+	if rings_sudo_copy "$src"; then
+		return 0
+	fi
+	return 1
+}
+
+rings_ensure_local_path() {
+	bindir=$1
+	case ":$PATH:" in
+	*":$bindir:"*) return 0 ;;
+	esac
+	rc=
+	shellname=${SHELL##*/}
+	case "$shellname" in
+	bash) rc="$HOME/.bashrc" ;;
+	zsh) rc="$HOME/.zshrc" ;;
+	esac
+	line="export PATH=\"$bindir:\$PATH\""
+	if [ -n "$rc" ]; then
+		if [ -f "$rc" ] && grep -F "$bindir" "$rc" >/dev/null 2>&1; then
+			echo "note: $bindir is not on PATH in this shell — open a new shell"
+			return 0
+		fi
+		printf '%s\n' "$line" >>"$rc"
+		echo "note: added $bindir to PATH in $rc — open a new shell"
+		return 0
+	fi
+	echo "note: $bindir is not on PATH — add it, or run $bindir/rings"
+}
+
+fallback=0
 if [ -n "${RING_PREFIX:-}" ]; then
 	mkdir -p "$RING_PREFIX"
 	dest="$RING_PREFIX/rings"
+	cp "$bin" "$dest"
+	chmod +x "$dest"
 elif [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
+	dest=/usr/local/bin/rings
+	cp "$bin" "$dest"
+	chmod +x "$dest"
+elif rings_try_usr_local "$bin"; then
 	dest=/usr/local/bin/rings
 else
 	mkdir -p "$HOME/.local/bin"
 	dest="$HOME/.local/bin/rings"
+	cp "$bin" "$dest"
+	chmod +x "$dest"
+	fallback=1
 fi
-
-cp "$bin" "$dest"
-chmod +x "$dest"
 
 echo "installed $dest ($tag)"
 "$dest" --version
 
-bindir=$(dirname "$dest")
-case ":$PATH:" in
-*":$bindir:"*) ;;
-*)
-	echo "note: $bindir is not on PATH — add it, or run $dest"
-	;;
-esac
-
-echo "next: sudo rings /"
+if [ "$fallback" -eq 1 ]; then
+	rings_ensure_local_path "$HOME/.local/bin"
+	rings_next "$dest"
+	echo "to get sudo rings: sudo install -m 755 $dest /usr/local/bin/rings"
+else
+	bindir=$(dirname "$dest")
+	case ":$PATH:" in
+	*":$bindir:"*) ;;
+	*)
+		echo "note: $bindir is not on PATH — add it, or run $dest"
+		;;
+	esac
+	rings_next "$dest"
+fi

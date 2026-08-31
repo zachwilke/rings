@@ -22,7 +22,9 @@ jobs:
 
       - name: Syntax-check install.sh
         if: runner.os != 'Windows'
-        run: sh -n install.sh
+        run: |
+          sh -n install.sh
+          if command -v dash >/dev/null 2>&1; then dash -n install.sh; fi
 
       - name: Parse install.ps1
         if: runner.os == 'Windows'
