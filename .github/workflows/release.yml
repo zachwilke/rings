@@ -129,11 +129,19 @@ jobs:
           fi
           ls -l dist
 
+          # Build jobs run `xz -k` then upload dist/*, so artifacts already
+          # contain both the uncompressed musl binary and the .xz. Blind
+          # `xz -dk` then dies with "File exists" (run 33358811514).
+          set -x
+          for stem in rings-x86_64-linux-musl rings-aarch64-linux-musl rings-armv7-linux-musleabihf; do
+            if [ -f "dist/$stem" ]; then
+              echo "using existing dist/$stem"
+            else
+              xz -dkf "dist/$stem.xz"
+            fi
+          done
           # Wrap the three Linux musl binaries in .debs (static — no libc Depends).
           # amd64 <- x86_64-linux-musl, arm64 <- aarch64-linux-musl, armhf <- armv7.
-          xz -dk dist/rings-x86_64-linux-musl.xz
-          xz -dk dist/rings-aarch64-linux-musl.xz
-          xz -dk dist/rings-armv7-linux-musleabihf.xz
           OUTDIR=dist packaging/debian/build-deb.sh "$VERSION" amd64 dist/rings-x86_64-linux-musl
           OUTDIR=dist packaging/debian/build-deb.sh "$VERSION" arm64 dist/rings-aarch64-linux-musl
           OUTDIR=dist packaging/debian/build-deb.sh "$VERSION" armhf dist/rings-armv7-linux-musleabihf
