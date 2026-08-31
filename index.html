@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rings apt</title>
+<style>
+body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; margin: 2rem; max-width: 48rem; color: #e8e6e3; background: #1b1b1b; }
+a { color: #8cb4ff; }
+code, pre { background: #111; color: #f2f0ec; }
+pre { padding: 1rem; overflow: auto; }
+code { padding: 0.1rem 0.3rem; }
+h1 { font-weight: 600; }
+p { line-height: 1.5; }
+</style>
+</head>
+<body>
+<h1>rings apt</h1>
+<p>Signed apt source for <a href="https://github.com/zachwilke/rings">rings</a> 0.2.0.</p>
+<pre>curl -fsSL https://raw.githubusercontent.com/zachwilke/rings/main/packaging/debian/add-apt-repo.sh | sudo sh
+sudo apt install rings</pre>
+<p>Sources line:</p>
+<pre>deb [arch=amd64,arm64,armhf signed-by=/etc/apt/keyrings/rings.gpg] https://zachwilke.github.io/rings stable main</pre>
+<p>Public key: <a href="rings-apt.asc">rings-apt.asc</a>. Architectures: amd64, arm64, armhf.</p>
+</body>
+</html>

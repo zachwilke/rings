@@ -1,0 +1,41 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+Origin: rings
+Label: rings
+Suite: stable
+Codename: stable
+Architectures: amd64 arm64 armhf
+Components: main
+Date: Mon, 31 Aug 2026 12:27:41 +0000
+Description: rings apt repository
+SHA256:
+ ef07aa91ce02f4e913efd0a8f50ea7c32a086f616c861ba21d3ce51f147e8461      516 main/binary-amd64/Packages
+ a34d875bb735d6708350ce607fac9a71b74fba8a747101071fa4d4ca0af5500b      383 main/binary-amd64/Packages.gz
+ 0d141c5adc268d13196344ab0af54d3e21e8cfd2dff32371fd92e3e450632ba1      516 main/binary-arm64/Packages
+ daddd0da2765836dd44f08b9cb107a5e27726dfcfd781a1a72af6cbdb6359733      383 main/binary-arm64/Packages.gz
+ 2c47f511a80fef34f21a8afcfe2640bfd24d37b088d8d41282d3d756482eea0c      516 main/binary-armhf/Packages
+ bbb28b62b0852b78481837f837a1ba664ffaaaed0995ab41c8c336870f7985fa      382 main/binary-armhf/Packages.gz
+MD5Sum:
+ aefd2b6fdd4c3a5ae62f2e48726d55d0      516 main/binary-amd64/Packages
+ b08e1f14d943301cb72a8470eeec48bd      383 main/binary-amd64/Packages.gz
+ b586ae6acc457b87b0322b46ba715dd4      516 main/binary-arm64/Packages
+ 62df726cd646bde4e9792751b092f3d4      383 main/binary-arm64/Packages.gz
+ 2a9ca784345c2d876ce34286ec17d7bb      516 main/binary-armhf/Packages
+ cb506ace8d87daeed33827f851664889      382 main/binary-armhf/Packages.gz
+-----BEGIN PGP SIGNATURE-----
+
+iQIzBAEBCAAdFiEEnMVhFPM6oo/VHZ0qT0KjwH8i5pEFAmqVcz0ACgkQT0KjwH8i
+5pGEag/+MvvwAxTxN/+INm5U14+QK3fHv8bRVnkd0Bi3gUzfI0bpXbKdsdZ7kn1a
+m0WObf/iesbxtDGNwDi2f/F/wqvBFe84LG0/UUH06oljCYxGnKTzUCu/XzePHljl
+mIyEnL4TFeFE2MAwDJHlfJCwVbt9P3gUnXijRfJcQRvO9sCl2lgiQTl3WXgoynKL
+Pu51M1lIUt7jt9gQqbyr9Wjx/9FbPSoxGG/PDi7XlcFa+7strfRdjAI/w19iyVFF
+Mw0CU8ml8hLgSiHhBJj/l1JXZgJeVf+sauLOzRsyNhZMfH4aAL0iF3MC5EPbNulv
+KEwOm716zAid3Rd29wMNIKLhbWt0yuONgwrXl7CC998IzX2P79W5x3gXeOP2IO0D
+cmGExsHLuPYcons7TVxAzkhYI95IITBPrdVpAu1ee+59gdNFek9tpHD+eiKiV0SG
+OYntfGKWaykGKuJlc+KYvXMECJAvVTkrnWIQosUEwCZhAwvjuuNgVlDGdDellw71
+C5d6flQf/kY+tYYbL88QgbHJ+fx4oZ15DgcZ0IuQNvx+3vBSsB+lzVoThEQjFVy1
++E63Kw8ehQB1rOqWCKEWaHd4vSBL7sGwTXsdVZ0AknzZTep5l43uMcCNeRPH5CxB
+SU+4Wl28HjLMtieVgWCaGIawcDzZk3dxDuTQjnTpftiC/QFVeYI=
+=0Lyc
+-----END PGP SIGNATURE-----

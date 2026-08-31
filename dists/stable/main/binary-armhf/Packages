@@ -1,0 +1,16 @@
+Package: rings
+Version: 0.2.0
+Architecture: armhf
+Maintainer: Zach Wilke <zach@pinefall.dev>
+Installed-Size: 608
+Filename: pool/main/r/rings/rings_0.2.0_armhf.deb
+Size: 299816
+MD5sum: e0c6d91dfd3266b44906bea1093a5ed4
+SHA1: 2a95f02d235f552d77a5173ae73a2dd309e6cd0f
+SHA256: 3655f86afed6ddfa4c3e068af633b81ad3e1507c228dd217f3716a9feaf6fe43
+Section: utils
+Priority: optional
+Homepage: https://github.com/zachwilke/rings
+Description: DaisyDisk-style disk usage TUI
+ A DaisyDisk-style disk map in one tiny static binary.
+

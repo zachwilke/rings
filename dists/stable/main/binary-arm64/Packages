@@ -1,0 +1,16 @@
+Package: rings
+Version: 0.2.0
+Architecture: arm64
+Maintainer: Zach Wilke <zach@pinefall.dev>
+Installed-Size: 648
+Filename: pool/main/r/rings/rings_0.2.0_arm64.deb
+Size: 307384
+MD5sum: 48dc303a4b5d16654ab54044b88185f9
+SHA1: 46ea9a62f2b1d8273cd60307bfc78551f1e91000
+SHA256: 58329d68316454f23555a08ffe8ccb49812a366ead3c7985bb27fb6f07728aac
+Section: utils
+Priority: optional
+Homepage: https://github.com/zachwilke/rings
+Description: DaisyDisk-style disk usage TUI
+ A DaisyDisk-style disk map in one tiny static binary.
+
