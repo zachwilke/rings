@@ -12,6 +12,10 @@
 
 A DaisyDisk-style disk map in one tiny static binary. Scan a path, see a colorful sunburst of what's eating the disk, drill in, and clear waste — with nothing deleted until you explicitly confirm.
 
+![rings scanning a home directory: a Braille-dot sunburst beside a largest-first list, with the footer showing totals and clickable buttons](docs/rings-browse.png)
+
+A 178 GB home directory. Every wedge is a file or folder sized by what it uses on disk; color follows depth, and temp, cache, log, journal, and crash paths get their own hues. Click a wedge or a row to select it, double-click to drill in, right-click for a context menu. (File names blurred.)
+
 Works on Linux (Debian, Ubuntu, RHEL/Fedora/CentOS, Arch), Raspberry Pi OS / Raspbian (64-bit and 32-bit), macOS, and Windows PowerShell.
 
 ## Install
