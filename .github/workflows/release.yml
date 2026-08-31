@@ -168,3 +168,13 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "$TAG" \
             --notes-file "$NOTES"
+
+  # Rebuilds Pages even when the tag already existed (release job exits 0).
+  apt-repo:
+    needs: release
+    uses: ./.github/workflows/apt-repo.yml
+    secrets: inherit
+    permissions:
+      contents: write
+      pages: write
+      id-token: write

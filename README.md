@@ -50,14 +50,21 @@ yay -S rings-bin
 
 AUR publish may still be pending the first AUR account push.
 
-Debian/Ubuntu (`.deb` from GitHub Releases):
+Debian/Ubuntu:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zachwilke/rings/main/packaging/debian/add-apt-repo.sh | sudo sh
+sudo apt install rings
+```
+
+Fallback (`.deb` from the GitHub Release):
 
 ```bash
 curl -fsSL -o rings.deb https://github.com/zachwilke/rings/releases/download/v0.2.0/rings_0.2.0_amd64.deb
 sudo apt install ./rings.deb
 ```
 
-arm64: `rings_0.2.0_arm64.deb`. armhf: `rings_0.2.0_armhf.deb`. A signed apt source comes later.
+arm64: `rings_0.2.0_arm64.deb`. armhf: `rings_0.2.0_armhf.deb`.
 
 Manual per-platform download (fallback):
 

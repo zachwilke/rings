@@ -1,0 +1,119 @@
+# Publish the signed apt tree to GitHub Pages from GitHub Release .debs.
+# workflow_dispatch rebuilds from a chosen (or latest) release without a crate bump.
+# release.yml also calls this after uploading debs — including the existing-tag
+# path, where `release: published` does not fire.
+name: Apt repo
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version (e.g. 0.2.0). Empty uses the latest GitHub Release."
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      version:
+        description: "Version (e.g. 0.2.0). Empty uses the latest GitHub Release."
+        required: false
+        type: string
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dpkg-dev
+        run: sudo apt-get update && sudo apt-get install -y dpkg-dev gnupg
+
+      - name: Download release debs
+        id: debs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          set -eu
+          mkdir -p debs
+          tag=""
+          if [ -n "${VERSION_INPUT:-}" ]; then
+            tag=$VERSION_INPUT
+            case "$tag" in
+            v*) ;;
+            *) tag="v$tag" ;;
+            esac
+          else
+            tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          fi
+          if [ -z "$tag" ]; then
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+            echo "no GitHub Release tag; skip apt repo"
+            exit 0
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if ! gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern 'rings_*.deb' --dir debs; then
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+            echo "no .deb assets on $tag; skip apt repo"
+            exit 0
+          fi
+          n=$(find debs -maxdepth 1 -name 'rings_*.deb' | wc -l | tr -d ' ')
+          if [ "$n" -lt 1 ]; then
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+            echo "no rings_*.deb on $tag; skip apt repo"
+            exit 0
+          fi
+          echo "missing=false" >> "$GITHUB_OUTPUT"
+          ls -l debs
+
+      - name: Build apt repo
+        if: steps.debs.outputs.missing != 'true'
+        env:
+          RINGS_APT_GPG_PRIVATE_KEY: ${{ secrets.RINGS_APT_GPG_PRIVATE_KEY }}
+          RINGS_APT_GPG_KEY_ID: ${{ secrets.RINGS_APT_GPG_KEY_ID }}
+        run: packaging/debian/build-apt-repo.sh debs apt-out
+
+      - name: Configure Pages
+        if: steps.debs.outputs.missing != 'true'
+        id: pages
+        continue-on-error: true
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        if: steps.debs.outputs.missing != 'true' && steps.pages.outcome == 'success'
+        id: upload
+        continue-on-error: true
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: apt-out
+
+      - name: Deploy to GitHub Pages
+        if: steps.debs.outputs.missing != 'true' && steps.pages.outcome == 'success' && steps.upload.outcome == 'success'
+        id: deploy
+        continue-on-error: true
+        uses: actions/deploy-pages@v4
+
+      - name: Push gh-pages fallback
+        if: steps.debs.outputs.missing != 'true' && steps.deploy.outcome != 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          test -d apt-out
+          cd apt-out
+          git init
+          git checkout -B gh-pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "Publish rings apt repository"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
+          echo "pushed gh-pages (enable Pages on that branch if Actions Pages is unset)"
