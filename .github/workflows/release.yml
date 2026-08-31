@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install musl and xz
+        run: sudo apt-get update && sudo apt-get install -y musl-tools xz-utils
+
+      - name: Test
+        run: cargo test
+
+      - name: Build static binary
+        run: cargo build --release --target x86_64-unknown-linux-musl
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/x86_64-unknown-linux-musl/release/rings dist/rings-x86_64-linux-musl
+          xz -k -9 dist/rings-x86_64-linux-musl
+          tar -C dist -czf dist/rings-v0.1.0-x86_64-linux-musl.tar.gz rings-x86_64-linux-musl
+          ls -l dist
+
+      - name: Publish v0.1.0
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view v0.1.0 --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "v0.1.0 already exists"
+            exit 0
+          fi
+          gh release create v0.1.0 \
+            dist/rings-x86_64-linux-musl.xz \
+            dist/rings-v0.1.0-x86_64-linux-musl.tar.gz \
+            --repo "${{ github.repository }}" \
+            --title "v0.1.0" \
+            --notes "$(cat <<'EOF'
+Tiny DaisyDisk-style disk map for Linux servers. One static musl binary, no runtime deps.
+
+Download is about 245 KB xz (binary about 585 KB). Built for a machine that is already almost full.
+
+```bash
+curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.0/rings-x86_64-linux-musl.xz | xz -d > rings
+chmod +x rings
+sudo ./rings /
+```
+
+- Colorful sunburst TUI, mouse and keyboard
+- sudo full-disk scan
+- Temp and cache finder (never auto-deletes)
+- Delete collector with confirm (type DELETE as root)
+- CSV export: `rings --csv findings.csv /`
+EOF
+)"
