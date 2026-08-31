@@ -389,6 +389,10 @@ fn official_debian_source_package_is_present() {
         "keep UNRELEASED until a DD uploads:\n{changelog}"
     );
     assert!(
+        changelog.contains("Closes: #1146333"),
+        "changelog must close the filed ITP:\n{changelog}"
+    );
+    assert!(
         !changelog.contains("unstable"),
         "do not set Distribution to unstable yet:\n{changelog}"
     );
@@ -437,7 +441,14 @@ fn official_debian_source_package_is_present() {
         itp.contains("ITP: rings -- DaisyDisk-style disk usage TUI"),
         "{itp}"
     );
-    assert!(itp.contains("draft only"), "{itp}");
+    assert!(
+        itp.contains("#1146333"),
+        "ITP must record the filed Debian bug:\n{itp}"
+    );
+    assert!(
+        !itp.contains("draft only") && !itp.contains("has not been filed"),
+        "ITP is filed; do not call it a draft:\n{itp}"
+    );
 
     // Musl-wrap tree must still exist; this packaging is additive.
     assert!(root.join("packaging/debian/build-deb.sh").is_file());

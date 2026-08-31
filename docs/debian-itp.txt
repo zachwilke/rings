@@ -1,3 +1,9 @@
+Filed as Debian bug #1146333
+https://bugs.debian.org/1146333
+Owner: Zach Wilke <zach@pinefall.dev>
+
+The text below is the ITP that was sent.
+
 To: submit@bugs.debian.org
 Subject: ITP: rings -- DaisyDisk-style disk usage TUI
 From: Zach Wilke <zach@pinefall.dev>
@@ -29,4 +35,4 @@ X-Debbugs-Cc: debian-devel@lists.debian.org
  debcargo-from-crates.io. The binary package name "rings" is free
  (lua-rings exists and is unrelated).
 
- This is a draft only; it has not been filed.
+ Filed as #1146333.
