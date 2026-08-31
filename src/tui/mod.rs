@@ -351,6 +351,122 @@ mod tests {
         assert_eq!(app.view, View::Browse);
     }
 
+    fn write_nested_fixture(root: &std::path::Path) {
+        let dirs = [
+            "usr/lib/x11",
+            "usr/share/doc",
+            "usr/share/man",
+            "usr/bin",
+            "var/log/journal",
+            "var/cache/apt",
+            "var/tmp",
+            "home/alice/.cache",
+            "home/alice/src/rings/target",
+            "home/bob",
+            "etc",
+        ];
+        for d in dirs {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        let files: &[(&str, usize)] = &[
+            ("usr/lib/x11/libX11.so", 9000),
+            ("usr/lib/x11/libXext.so", 4000),
+            ("usr/lib/libfoo.so", 400),
+            ("usr/lib/libbar.so", 300),
+            ("usr/lib/libtiny.so", 80),
+            ("usr/share/doc/readme", 5000),
+            ("usr/share/man/ls.1", 3500),
+            ("usr/share/misc", 1800),
+            ("usr/bin/ls", 6000),
+            ("var/log/journal/system.journal", 7000),
+            ("var/log/syslog", 2500),
+            ("var/log/kern.log", 700),
+            ("var/cache/apt/pkg", 4500),
+            ("var/cache/font", 2200),
+            ("var/tmp/sess", 1800),
+            ("var/tmp/upload", 1600),
+            ("home/alice/.cache/thumb", 3500),
+            ("home/alice/src/rings/target/debug", 2200),
+            ("home/bob/notes", 3500),
+            ("etc/passwd", 3500),
+            ("crash.core", 1800),
+        ];
+        for (path, n) in files {
+            std::fs::write(root.join(path), vec![b'x'; *n]).unwrap();
+        }
+    }
+
+    fn write_ppm(buf: &Buffer, path: &std::path::Path, scale: u32) {
+        let w = buf.width as u32 * scale;
+        let h = buf.height as u32 * 2 * scale;
+        let mut px = vec![0u8; (w * h * 3) as usize];
+        for y in 0..buf.height {
+            for x in 0..buf.width {
+                let cell = buf
+                    .get(x, y)
+                    .cloned()
+                    .unwrap_or(crate::term::Cell::blank(BG));
+                let (top, bot) = match cell.ch {
+                    '█' => (cell.fg, cell.fg),
+                    '▀' => (cell.fg, cell.bg),
+                    '▄' => (cell.bg, cell.fg),
+                    _ => (cell.bg, cell.bg),
+                };
+                for sy in 0..scale {
+                    for sx in 0..scale {
+                        let put = |px: &mut [u8], x: u32, y: u32, c: crate::term::Rgb| {
+                            let i = ((y * w + x) * 3) as usize;
+                            px[i] = c.0;
+                            px[i + 1] = c.1;
+                            px[i + 2] = c.2;
+                        };
+                        put(
+                            &mut px,
+                            x as u32 * scale + sx,
+                            y as u32 * 2 * scale + sy,
+                            top,
+                        );
+                        put(
+                            &mut px,
+                            x as u32 * scale + sx,
+                            y as u32 * 2 * scale + scale + sy,
+                            bot,
+                        );
+                    }
+                }
+            }
+        }
+        let mut out = format!("P6\n{w} {h}\n255\n").into_bytes();
+        out.extend(px);
+        std::fs::write(path, out).unwrap();
+    }
+
+    #[test]
+    fn dump_browse_view_ppm() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.tree = Some(tree);
+        app.view = View::Browse;
+        app.selected = 1;
+
+        let mut buf = Buffer::new(100, 28, BG);
+        let hits = draw::draw(&mut buf, &app);
+        let path = std::env::temp_dir().join("rings-browse-current.ppm");
+        write_ppm(&buf, &path, 3);
+        let text = std::env::temp_dir().join("rings-browse-current.txt");
+        std::fs::write(&text, buf.text()).unwrap();
+        eprintln!(
+            "browse dump {} slices rings_for={} → {} and {}",
+            hits.slices.len(),
+            sunburst::rings_for(hits.sunburst),
+            path.display(),
+            text.display()
+        );
+        assert!(!hits.slices.is_empty());
+    }
+
     #[test]
     fn first_paint_shows_the_shared_logo() {
         let mut app = App::new(std::path::PathBuf::from("/var"), false);

@@ -200,7 +200,8 @@ fn draw_browse(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
     };
     let current = tree.node_at(&app.cwd);
     let selected = app.selected_id();
-    let slices = sunburst::build_slices(tree, current, app.apparent, selected);
+    let rings = sunburst::rings_for(left);
+    let slices = sunburst::build_slices(tree, current, app.apparent, selected, rings);
     sunburst::render(buf, left, &slices);
     hits.slices = slices;
 
