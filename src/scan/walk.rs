@@ -287,6 +287,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn hardlinks_count_size_once() {
         let tmp = TempDir::new().unwrap();

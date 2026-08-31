@@ -222,8 +222,11 @@ pub fn meta_ino(meta: &Metadata) -> u64 {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::fs::MetadataExt;
-        meta.file_index().unwrap_or(0)
+        // `file_index` is still unstable (`windows_by_handle`). Hardlinks
+        // are rare on NTFS waste scans; skip dedup rather than take a
+        // nightly-only API.
+        let _ = meta;
+        0
     }
 }
 
@@ -235,8 +238,8 @@ pub fn meta_nlink(meta: &Metadata) -> u64 {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::fs::MetadataExt;
-        meta.number_of_links().unwrap_or(1) as u64
+        let _ = meta;
+        1
     }
 }
 
