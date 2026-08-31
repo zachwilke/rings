@@ -1,0 +1,32 @@
+To: submit@bugs.debian.org
+Subject: ITP: rings -- DaisyDisk-style disk usage TUI
+From: Zach Wilke <zach@pinefall.dev>
+
+Package: wnpp
+Severity: wishlist
+Owner: Zach Wilke <zach@pinefall.dev>
+X-Debbugs-Cc: debian-devel@lists.debian.org
+
+* Package name    : rings
+  Version         : 0.2.0
+  Upstream Contact: Zach Wilke <zach@pinefall.dev>
+* URL             : https://github.com/zachwilke/rings
+* License         : MIT
+  Programming Lang: Rust
+  Description     : DaisyDisk-style disk usage TUI
+
+ rings scans a path and shows a DaisyDisk-style sunburst of disk use
+ plus a largest-first list. Drill into directories, mark waste, and
+ delete only after an explicit confirm. The Unix build depends only
+ on libc (no extra crates at runtime). Scripting flags --plain,
+ --csv, and --json write parseable output without opening the TUI.
+
+ I intend to maintain this package. Looking for a sponsor (Debian
+ Rust team welcome).
+
+ The crates.io crate name "rings" is an unrelated icon crate; this
+ package is built from the GitHub source, not via
+ debcargo-from-crates.io. The binary package name "rings" is free
+ (lua-rings exists and is unrelated).
+
+ This is a draft only; it has not been filed.

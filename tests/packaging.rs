@@ -1,4 +1,4 @@
-//! Smoke tests for distro packaging (AUR metadata + debian scripts).
+//! Smoke tests for distro packaging (AUR, musl-wrap debs, official debian/).
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -334,4 +334,125 @@ fn build_apt_repo_writes_pool_and_packages() {
     assert!(outdir
         .join("dists/stable/main/binary-amd64/Packages.gz")
         .is_file());
+}
+
+/// Official Debian source package at repo-root debian/ (dh-cargo, from
+/// source). Distinct from packaging/debian/ (musl-wrap + Pages apt).
+#[test]
+fn official_debian_source_package_is_present() {
+    let root = repo_root();
+    let debian = root.join("debian");
+    let version = cargo_version();
+
+    for rel in [
+        "control",
+        "rules",
+        "changelog",
+        "copyright",
+        "watch",
+        "source/format",
+        "rings.1",
+        "rings.manpages",
+        "cargo-checksum.json",
+    ] {
+        let path = debian.join(rel);
+        assert!(path.is_file(), "missing {}", path.display());
+    }
+
+    let control = std::fs::read_to_string(debian.join("control")).unwrap();
+    assert!(control.contains("Source: rings"), "{control}");
+    assert!(control.contains("Section: utils"), "{control}");
+    assert!(control.contains("Priority: optional"), "{control}");
+    assert!(
+        control.contains("Zach Wilke <zach@pinefall.dev>"),
+        "{control}"
+    );
+    assert!(control.contains("dh-cargo"), "{control}");
+    assert!(control.contains("librust-libc-dev"), "{control}");
+    assert!(control.contains("Rules-Requires-Root: no"), "{control}");
+    assert!(
+        control.contains("https://github.com/zachwilke/rings"),
+        "{control}"
+    );
+    assert!(
+        !control.contains("debcargo"),
+        "must not package via debcargo-from-crates.io:\n{control}"
+    );
+
+    let changelog = std::fs::read_to_string(debian.join("changelog")).unwrap();
+    assert!(
+        changelog.contains(&format!("rings ({version}-1)")),
+        "changelog must match Cargo.toml {version}:\n{changelog}"
+    );
+    assert!(
+        changelog.contains("UNRELEASED"),
+        "keep UNRELEASED until a DD uploads:\n{changelog}"
+    );
+    assert!(
+        !changelog.contains("unstable"),
+        "do not set Distribution to unstable yet:\n{changelog}"
+    );
+
+    let copyright = std::fs::read_to_string(debian.join("copyright")).unwrap();
+    assert!(
+        copyright.contains("https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/"),
+        "{copyright}"
+    );
+    assert!(copyright.contains("License: MIT"), "{copyright}");
+    assert!(copyright.contains("2026 Zach Wilke"), "{copyright}");
+
+    let format = std::fs::read_to_string(debian.join("source/format")).unwrap();
+    assert_eq!(format.trim(), "3.0 (quilt)");
+
+    let watch = std::fs::read_to_string(debian.join("watch")).unwrap();
+    assert!(watch.contains("version=4"), "{watch}");
+    assert!(
+        watch.contains("https://github.com/zachwilke/rings/tags"),
+        "{watch}"
+    );
+
+    let rules = std::fs::read_to_string(debian.join("rules")).unwrap();
+    assert!(rules.contains("buildsystem=cargo"), "{rules}");
+    assert!(
+        !rules.contains("crates.io/api"),
+        "rules must not fetch the cargo registry:\n{rules}"
+    );
+
+    let man = std::fs::read_to_string(debian.join("rings.1")).unwrap();
+    for needle in [
+        "rings [options] [path]",
+        "sunburst",
+        "rings help",
+        "plain",
+        "csv",
+        "json",
+        "offline",
+    ] {
+        assert!(man.contains(needle), "man page missing {needle:?}");
+    }
+
+    let itp = std::fs::read_to_string(root.join("docs/debian-itp.txt")).unwrap();
+    assert!(itp.contains("To: submit@bugs.debian.org"), "{itp}");
+    assert!(
+        itp.contains("ITP: rings -- DaisyDisk-style disk usage TUI"),
+        "{itp}"
+    );
+    assert!(itp.contains("draft only"), "{itp}");
+
+    // Musl-wrap tree must still exist; this packaging is additive.
+    assert!(root.join("packaging/debian/build-deb.sh").is_file());
+}
+
+#[test]
+fn readme_does_not_claim_official_archive_apt() {
+    let readme = std::fs::read_to_string(repo_root().join("README.md")).unwrap();
+    assert!(
+        readme.contains("zachwilke.github.io/rings")
+            || readme.contains("add-apt-repo.sh"),
+        "keep the GitHub Pages / .deb install path"
+    );
+    assert!(
+        readme.contains("until NEW") || readme.contains("ITP"),
+        "README must say official archive inclusion is not done yet"
+    );
 }

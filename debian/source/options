@@ -1,0 +1,3 @@
+# Ignore in-tree cargo output if someone built locally before packaging.
+tar-ignore = target
+extend-diff-ignore = "(^|/)target/"

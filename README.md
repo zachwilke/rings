@@ -50,12 +50,14 @@ yay -S rings-bin
 
 AUR publish may still be pending the first AUR account push.
 
-Debian/Ubuntu:
+Debian/Ubuntu (GitHub Pages apt repo):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zachwilke/rings/main/packaging/debian/add-apt-repo.sh | sudo sh
 sudo apt install rings
 ```
+
+Official Debian / Ubuntu / Raspberry Pi OS archive inclusion is in progress (ITP); until NEW, those archives do not ship rings.
 
 Fallback (`.deb` from the GitHub Release):
 
