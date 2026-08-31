@@ -161,34 +161,79 @@ fn is_system_root(raw: &str) -> bool {
     matches!(b, [d, b':'] | [d, b':', b'\\' | b'/'] if d.is_ascii_alphabetic())
 }
 
-#[cfg(windows)]
-fn windows_refuse(raw: &str) -> Option<String> {
-    const EXACT: &[&str] = &[
-        r"C:\Windows",
-        r"C:\Program Files",
-        r"C:\Program Files (x86)",
-        r"C:\Users",
-        r"C:\ProgramData",
-    ];
-    const PREFIXES: &[&str] = &[
-        r"C:\Windows\",
-        r"C:\Program Files\",
-        r"C:\Program Files (x86)\",
-    ];
-    for exact in EXACT {
-        if path_eq(raw, exact) {
+fn win_norm(p: &str) -> String {
+    let mut t = p.replace('/', "\\");
+    if let Some(stripped) = t.strip_prefix(r"\\?\") {
+        t = stripped.to_string();
+    }
+    while t.len() > 3 && t.ends_with('\\') {
+        t.pop();
+    }
+    t
+}
+
+/// Match `raw` against this install's Windows system paths.
+/// `Users` and `ProgramData` are exact-only so user files and caches stay deletable.
+fn windows_refuse_paths(
+    raw: &str,
+    sysroot: &str,
+    program_files: &str,
+    program_files_x86: Option<&str>,
+    program_data: &str,
+    users: &str,
+) -> Option<String> {
+    let raw = win_norm(raw);
+    let sysroot = win_norm(sysroot);
+    let program_files = win_norm(program_files);
+    let program_data = win_norm(program_data);
+    let users = win_norm(users);
+    let pf86 = program_files_x86.map(win_norm);
+
+    let exact = [&sysroot, &program_files, &program_data, &users];
+    for exact in exact {
+        if path_eq(&raw, exact) {
             return Some(format!("{exact} is a safeguarded system path"));
         }
     }
-    for prefix in PREFIXES {
-        if path_starts(raw, prefix) {
-            return Some(format!(
-                "{raw} is under safeguarded prefix {}",
-                prefix.trim_end_matches('\\')
-            ));
+    if let Some(p) = pf86.as_deref() {
+        if path_eq(&raw, p) {
+            return Some(format!("{p} is a safeguarded system path"));
+        }
+    }
+
+    let mut prefixes = vec![sysroot, program_files];
+    if let Some(p) = pf86 {
+        prefixes.push(p);
+    }
+    for base in prefixes {
+        let prefix = format!("{base}\\");
+        if path_starts(&raw, &prefix) {
+            return Some(format!("{raw} is under safeguarded prefix {base}"));
         }
     }
     None
+}
+
+#[cfg(windows)]
+fn windows_refuse(raw: &str) -> Option<String> {
+    let sysroot = std::env::var("SystemRoot")
+        .or_else(|_| std::env::var("windir"))
+        .unwrap_or_else(|_| r"C:\Windows".into());
+    let program_files =
+        std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into());
+    let program_files_x86 = std::env::var("ProgramFiles(x86)").ok();
+    let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+    let program_data =
+        std::env::var("ProgramData").unwrap_or_else(|_| format!(r"{drive}\ProgramData"));
+    let users = format!(r"{drive}\Users");
+    windows_refuse_paths(
+        raw,
+        &sysroot,
+        &program_files,
+        program_files_x86.as_deref(),
+        &program_data,
+        &users,
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -259,6 +304,28 @@ mod tests {
         assert!(refuse_reason(Path::new("/System/Library")).is_some());
         assert!(refuse_reason(Path::new("/private/etc/hosts")).is_some());
         assert!(refuse_reason(Path::new("/private/tmp/x")).is_none());
+    }
+
+    #[test]
+    fn windows_safeguards_follow_system_root() {
+        let hit = |raw| {
+            windows_refuse_paths(
+                raw,
+                r"D:\Windows",
+                r"D:\Program Files",
+                Some(r"D:\Program Files (x86)"),
+                r"D:\ProgramData",
+                r"D:\Users",
+            )
+        };
+        assert!(hit(r"D:\Windows").is_some());
+        assert!(hit(r"D:\Windows\System32\cmd.exe").is_some());
+        assert!(hit(r"D:\Program Files").is_some());
+        assert!(hit(r"D:\Users").is_some());
+        assert!(hit(r"D:\Users\zach\AppData\Local\Temp\x").is_none());
+        // Not this install's system drive.
+        assert!(hit(r"C:\Windows").is_none());
+        assert!(hit(r"C:\Windows\System32\cmd.exe").is_none());
     }
 
     #[cfg(windows)]
