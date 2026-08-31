@@ -26,6 +26,11 @@ pub enum Event {
         x: u16,
         y: u16,
     },
+    /// Right button press: opens the context menu.
+    RightClick {
+        x: u16,
+        y: u16,
+    },
 }
 
 /// Wait up to `timeout_ms` for input. Returns all events decoded from the
@@ -138,11 +143,20 @@ fn decode_sgr_mouse(bytes: &[u8]) -> (Option<Event>, usize) {
             }
             b';' => field += 1,
             b'M' => {
-                if field == 2 && fields[0] & 0b1100_0011 == 0 {
-                    // button 0 press (no motion/wheel bits), 1-based coords
+                // Button bits only: motion, wheel, and modifier bits are ignored.
+                let button = fields[0] & 0b1100_0011;
+                if field == 2 && (button == 0 || button == 2) {
+                    // 1-based coords
                     let x = fields[1].saturating_sub(1).min(u16::MAX as u32) as u16;
                     let y = fields[2].saturating_sub(1).min(u16::MAX as u32) as u16;
-                    return (Some(Event::Click { x, y }), i);
+                    return (
+                        Some(if button == 0 {
+                            Event::Click { x, y }
+                        } else {
+                            Event::RightClick { x, y }
+                        }),
+                        i,
+                    );
                 }
                 return (None, i);
             }
@@ -182,6 +196,16 @@ mod tests {
         assert_eq!(decode(b"\x1b[<0;10;5m"), vec![]);
         // wheel ignored
         assert_eq!(decode(b"\x1b[<64;10;5M"), vec![]);
+    }
+
+    #[test]
+    fn decodes_sgr_right_click_press_only() {
+        assert_eq!(
+            decode(b"\x1b[<2;10;5M"),
+            vec![Event::RightClick { x: 9, y: 4 }]
+        );
+        assert_eq!(decode(b"\x1b[<2;10;5m"), vec![], "release ignored");
+        assert_eq!(decode(b"\x1b[<1;10;5M"), vec![], "middle button ignored");
     }
 
     #[test]

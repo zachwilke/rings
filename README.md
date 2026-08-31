@@ -94,13 +94,18 @@ We deliberately skip UPX: it shrinks the download but needs extra memory and dis
 ```bash
 sudo rings /           # full-disk scan (Linux, Raspberry Pi OS, macOS)
 rings.exe C:\          # Windows PowerShell (Administrator for the whole disk)
-rings /var/log         # any path; default is .
+rings /var/log         # any path
+sudo rings             # no path: pick the directory to scan first
 rings help             # logo, usage, and every key binding
 rings --plain /        # parseable table to stdout, no TUI
 rings --offline /      # TUI without the GitHub Release update check
 rings --csv out.csv /  # findings CSV for scripts, then exit
 rings --json /srv      # analyzed tree as JSON
 ```
+
+Given a path, rings scans it straight away. Started with no path in a terminal, it opens a vim-style directory picker in the current directory instead: `j` / `k` to move, `Enter` (or `l`) to open a directory, `h` / Backspace to go up, `s` to scan the highlighted directory. Piped or scripted runs with no path still scan the current directory, unchanged.
+
+From a finished scan, `-` (or the **Picker** button) reopens the picker at the directory you are browsing, so you can scan somewhere else without restarting rings. `Esc` — or **Back to scan** — returns to the scan you left, untouched; scanning a new directory replaces it.
 
 When stdout is not a terminal (a pipe or redirect), rings prints the plain table automatically — no TUI, no spinner. `--plain` / `--no-tui`, `--csv`, and `--json` never enter the TUI, even in a terminal.
 
@@ -114,9 +119,13 @@ Press `?` or `F1` in the TUI for the full key list (the footer always hints `? h
 | --- | --- |
 | `j` `k` / arrows — move | click a slice or row — select |
 | Enter — drill in | double-click — drill in |
-| `h` / Backspace — go up | click the footer buttons |
-| Space — mark for delete · `f` — temp & cache · `c` — collector | |
-| `x` — confirm delete · `e` — export CSV · `?` `F1` — help · `q` — quit | |
+| `h` / Backspace — go up · `-` — picker | right-click — context menu |
+| Space — mark for delete · `f` — temp & cache · `c` — collector | click the footer buttons |
+| `x` — confirm delete · `e` — export CSV · `?` `F1` — help · `q` — quit | click a breadcrumb — jump |
+
+In the picker: `j` `k` move, `Enter` opens a directory, `h` goes up, `s` scans the highlighted one, `Esc` goes back to the scan you came from.
+
+Right-click any slice, row, or picker entry for a context menu — open, mark for delete, or delete that file or directory. Deleting from the menu marks the item and opens the same confirm modal as `x`; it never unlinks on the click.
 
 ## Delete, carefully
 

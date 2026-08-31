@@ -8,9 +8,14 @@ use crate::dto::waste_hits;
 use crate::scan::{Progress, Tree};
 use crate::size::human_bytes;
 use crate::sys;
+use crate::tui::picker::Picker;
+
+/// Rows the list scrolls by; the browse list uses the same page.
+pub const LIST_PAGE: usize = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum View {
+    Picker,
     Scanning,
     Browse,
     Findings,
@@ -30,6 +35,50 @@ pub enum Action {
     Cancel,
     Mark,
     Help,
+    Scan,
+    /// Leave a finished scan for the directory picker.
+    Picker,
+    /// Return to the scan the picker was opened from.
+    BackToScan,
+}
+
+/// One entry in the right-click context menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuAction {
+    Open,
+    ScanHere,
+    Mark,
+    Unmark,
+    Delete,
+    Cancel,
+}
+
+/// Right-click menu, drawn over whatever view is underneath.
+#[derive(Clone, Debug)]
+pub struct Menu {
+    pub x: u16,
+    pub y: u16,
+    pub title: String,
+    pub items: Vec<(MenuAction, String)>,
+    pub selected: usize,
+}
+
+impl Menu {
+    pub fn width(&self) -> u16 {
+        let widest = self
+            .items
+            .iter()
+            .map(|(_, label)| label.chars().count())
+            .chain(std::iter::once(self.title.chars().count()))
+            .max()
+            .unwrap_or(0)
+            .min(48);
+        (widest as u16).saturating_add(4)
+    }
+
+    pub fn height(&self) -> u16 {
+        self.items.len() as u16 + 2
+    }
 }
 
 pub struct App {
@@ -49,6 +98,10 @@ pub struct App {
     pub quit: bool,
     pub scan_path: PathBuf,
     pub started: Instant,
+    pub picker: Option<Picker>,
+    /// Set by the picker; the event loop spawns the walk for this path.
+    pub pending_scan: Option<PathBuf>,
+    pub menu: Option<Menu>,
 }
 
 impl App {
@@ -70,7 +123,249 @@ impl App {
             quit: false,
             scan_path,
             started: Instant::now(),
+            picker: None,
+            pending_scan: None,
+            menu: None,
         }
+    }
+
+    /// Start in the directory picker instead of scanning straight away.
+    pub fn open_picker(&mut self, dir: &Path) {
+        match Picker::open(dir) {
+            Ok(picker) => {
+                self.picker = Some(picker);
+                self.status.clear();
+            }
+            Err(e) => {
+                self.picker = Picker::open(Path::new("/")).ok();
+                self.status = e;
+            }
+        }
+        self.view = View::Picker;
+    }
+
+    /// Reopen the picker from a scan, starting at the directory in view.
+    /// The tree stays put so Esc can drop straight back into it.
+    pub fn open_picker_from_scan(&mut self) {
+        let start = match self.tree.as_ref() {
+            Some(tree) => {
+                let node = tree.get(tree.node_at(&self.cwd));
+                if node.is_dir {
+                    node.path.clone()
+                } else {
+                    node.path.parent().unwrap_or(&node.path).to_path_buf()
+                }
+            }
+            None => self.scan_path.clone(),
+        };
+        self.menu = None;
+        self.open_picker(&start);
+    }
+
+    /// Back to the scan the picker interrupted, if there is still one.
+    pub fn resume_scan(&mut self) {
+        if self.tree.is_some() {
+            self.picker = None;
+            self.status.clear();
+            self.view = View::Browse;
+        }
+    }
+
+    pub fn picker_move(&mut self, delta: isize) {
+        if let Some(p) = self.picker.as_mut() {
+            p.move_sel(delta, LIST_PAGE);
+        }
+    }
+
+    pub fn picker_select(&mut self, index: usize) {
+        if let Some(p) = self.picker.as_mut() {
+            p.move_to(index, LIST_PAGE);
+        }
+    }
+
+    pub fn picker_enter(&mut self) {
+        let Some(p) = self.picker.as_mut() else {
+            return;
+        };
+        match p.enter(LIST_PAGE) {
+            Ok(()) => self.status.clear(),
+            Err(e) => self.status = e,
+        }
+    }
+
+    pub fn picker_up(&mut self) {
+        let Some(p) = self.picker.as_mut() else {
+            return;
+        };
+        match p.up(LIST_PAGE) {
+            Ok(()) => self.status.clear(),
+            Err(e) => self.status = e,
+        }
+    }
+
+    /// Queue the highlighted directory (or the current one) for the walker.
+    pub fn scan_picked(&mut self) {
+        if let Some(p) = self.picker.as_ref() {
+            self.pending_scan = Some(p.scan_target());
+        }
+    }
+
+    /// Hand the walker a fresh root: reset every per-scan piece of state.
+    pub fn begin_scan(&mut self, path: PathBuf) {
+        self.scan_path = path;
+        self.tree = None;
+        self.progress = None;
+        self.cwd.clear();
+        self.selected = 0;
+        self.findings_selected = 0;
+        self.list_offset = 0;
+        self.picker = None;
+        self.status.clear();
+        self.started = Instant::now();
+        self.view = View::Scanning;
+    }
+
+    /// Build the context menu for whatever the cursor is on. The caller has
+    /// already moved the selection there, so every item acts on the selection.
+    pub fn open_menu(&mut self, x: u16, y: u16) {
+        let (title, items) = match self.view {
+            View::Picker => self.picker_menu_items(),
+            View::Browse | View::Findings | View::Collector => self.node_menu_items(),
+            _ => return,
+        };
+        if items.is_empty() {
+            return;
+        }
+        self.menu = Some(Menu {
+            x,
+            y,
+            title,
+            items,
+            selected: 0,
+        });
+    }
+
+    fn picker_menu_items(&self) -> (String, Vec<(MenuAction, String)>) {
+        let Some(picker) = self.picker.as_ref() else {
+            return (String::new(), Vec::new());
+        };
+        let entry = picker.selected_entry();
+        // Name only: the footer already carries the full path.
+        let title = match entry {
+            Some(e) => e.name.clone(),
+            None => picker.dir.display().to_string(),
+        };
+        let mut items = Vec::new();
+        match entry {
+            Some(e) if e.is_dir => {
+                items.push((MenuAction::ScanHere, format!("Scan {}", e.name)));
+                items.push((MenuAction::Open, format!("Open {}", e.name)));
+            }
+            _ => {
+                items.push((MenuAction::ScanHere, "Scan this directory".to_string()));
+            }
+        }
+        items.push((MenuAction::Cancel, "Cancel".to_string()));
+        (title, items)
+    }
+
+    fn node_menu_items(&self) -> (String, Vec<(MenuAction, String)>) {
+        let (Some(tree), Some(id)) = (self.tree.as_ref(), self.selected_node_id()) else {
+            return (String::new(), Vec::new());
+        };
+        let node = tree.get(id);
+        let title = format!(
+            "{}  ·  {}",
+            node.name,
+            human_bytes(node.display_size(self.apparent))
+        );
+        let mut items = Vec::new();
+        if matches!(self.view, View::Browse) && node.is_dir && !node.children.is_empty() {
+            items.push((MenuAction::Open, "Open".to_string()));
+        }
+        let what = if node.is_dir { "directory" } else { "file" };
+        if self.collector.contains_path(&node.path) {
+            items.push((MenuAction::Unmark, "Remove from collector".to_string()));
+        } else {
+            items.push((MenuAction::Mark, format!("Mark {what} for delete")));
+        }
+        items.push((MenuAction::Delete, format!("Delete {what}…")));
+        items.push((MenuAction::Cancel, "Cancel".to_string()));
+        (title, items)
+    }
+
+    pub fn menu_move(&mut self, delta: isize) {
+        let Some(menu) = self.menu.as_mut() else {
+            return;
+        };
+        if menu.items.is_empty() {
+            return;
+        }
+        let last = (menu.items.len() - 1) as isize;
+        menu.selected = (menu.selected as isize + delta).clamp(0, last) as usize;
+    }
+
+    pub fn menu_select(&mut self, index: usize) {
+        if let Some(menu) = self.menu.as_mut() {
+            menu.selected = index.min(menu.items.len().saturating_sub(1));
+        }
+    }
+
+    pub fn close_menu(&mut self) {
+        self.menu = None;
+    }
+
+    /// Run the highlighted menu item and close the menu.
+    pub fn menu_activate(&mut self) {
+        let Some(menu) = self.menu.take() else {
+            return;
+        };
+        let Some(&(action, _)) = menu.items.get(menu.selected) else {
+            return;
+        };
+        match action {
+            MenuAction::Open => match self.view {
+                View::Picker => self.picker_enter(),
+                _ => self.drill(),
+            },
+            MenuAction::ScanHere => self.scan_picked(),
+            MenuAction::Mark | MenuAction::Unmark => self.toggle_mark_selected(),
+            MenuAction::Delete => self.delete_selected(),
+            MenuAction::Cancel => {}
+        }
+    }
+
+    /// Mark the selection if needed, then go straight to the confirm modal.
+    fn delete_selected(&mut self) {
+        let Some(tree) = self.tree.as_ref() else {
+            return;
+        };
+        let Some(id) = self.selected_node_id() else {
+            return;
+        };
+        if !self.collector.contains_path(&tree.get(id).path) {
+            self.toggle_mark_selected();
+            let Some(tree) = self.tree.as_ref() else {
+                return;
+            };
+            if !self.collector.contains_path(&tree.get(id).path) {
+                return; // safeguarded: toggle_mark_selected already set the status
+            }
+        }
+        self.begin_confirm();
+    }
+
+    pub fn open_help(&mut self) {
+        if matches!(self.view, View::Help) {
+            return;
+        }
+        self.previous_view = self.view.clone();
+        self.view = View::Help;
+    }
+
+    /// Leave the help overlay for whatever view opened it.
+    pub fn close_help(&mut self) {
+        self.view = self.previous_view.clone();
     }
 
     /// Animation frame for the scan spinner, ~8 fps.
@@ -134,7 +429,7 @@ impl App {
         let n = match self.view {
             View::Findings => self.finding_ids().len(),
             View::Collector => self.collector.len(),
-            View::Confirm { .. } | View::Help | View::Scanning => return,
+            View::Picker | View::Confirm { .. } | View::Help | View::Scanning => return,
             _ => self.current_children().len(),
         };
         if n == 0 {
@@ -146,7 +441,7 @@ impl App {
         };
         let next = *idx as isize + delta;
         *idx = next.clamp(0, (n as isize) - 1) as usize;
-        self.ensure_visible(8);
+        self.ensure_visible(LIST_PAGE);
     }
 
     fn ensure_visible(&mut self, page: usize) {
@@ -189,7 +484,8 @@ impl App {
 
     pub fn go_up(&mut self) {
         match self.view {
-            View::Findings | View::Collector | View::Help => {
+            View::Help => self.close_help(),
+            View::Findings | View::Collector => {
                 self.view = View::Browse;
             }
             View::Confirm { .. } => {

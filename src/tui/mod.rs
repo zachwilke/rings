@@ -1,5 +1,6 @@
 mod app;
 mod draw;
+mod picker;
 mod sunburst;
 mod theme;
 
@@ -15,25 +16,41 @@ use self::theme::BG;
 
 const POLL_MS: i32 = 80;
 
-pub fn run(path: PathBuf, opts: WalkOptions, apparent: bool) -> Result<(), String> {
-    let (tx, rx) = mpsc::channel();
-    let scan_path = path.clone();
-    std::thread::spawn(move || scan_with_progress(scan_path, opts, tx));
+/// `path` is the scan root. `None` opens the directory picker at the current
+/// directory so `rings` alone browses before it walks.
+pub fn run(path: Option<PathBuf>, opts: WalkOptions, apparent: bool) -> Result<(), String> {
+    let start = path.clone().unwrap_or_else(|| PathBuf::from("."));
+    let mut app = App::new(start, apparent);
+    match path {
+        Some(p) => app.pending_scan = Some(p),
+        None => app.open_picker(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
+    }
 
-    let mut app = App::new(path, apparent);
     let term = Term::enter().map_err(|e| format!("cannot enter raw mode: {e}"))?;
-    let result = event_loop(&term, &mut app, &rx);
+    let result = event_loop(&term, &mut app, opts);
     drop(term);
     result
 }
 
-fn event_loop(term: &Term, app: &mut App, rx: &mpsc::Receiver<WalkEvent>) -> Result<(), String> {
+fn spawn_scan(path: PathBuf, opts: WalkOptions) -> mpsc::Receiver<WalkEvent> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || scan_with_progress(path, opts, tx));
+    rx
+}
+
+fn event_loop(term: &Term, app: &mut App, opts: WalkOptions) -> Result<(), String> {
     let mut prev: Option<Buffer> = None;
     let mut hits = HitMap::empty();
     let mut dirty = true;
+    let mut rx: Option<mpsc::Receiver<WalkEvent>> = None;
 
     loop {
-        while let Ok(ev) = rx.try_recv() {
+        if let Some(path) = app.pending_scan.take() {
+            rx = Some(spawn_scan(path.clone(), opts.clone()));
+            app.begin_scan(path);
+            dirty = true;
+        }
+        while let Some(Ok(ev)) = rx.as_ref().map(|r| r.try_recv()) {
             dirty = true;
             match ev {
                 WalkEvent::Progress(p) => app.progress = Some(p),
@@ -71,6 +88,7 @@ fn event_loop(term: &Term, app: &mut App, rx: &mpsc::Receiver<WalkEvent>) -> Res
             match ev {
                 Event::Key(key) => handle_key(app, key),
                 Event::Click { x, y } => handle_click(app, &hits, x, y),
+                Event::RightClick { x, y } => handle_right_click(app, &hits, x, y),
             }
             if app.quit {
                 return Ok(());
@@ -83,6 +101,21 @@ fn event_loop(term: &Term, app: &mut App, rx: &mpsc::Receiver<WalkEvent>) -> Res
 }
 
 fn handle_key(app: &mut App, key: Key) {
+    if app.menu.is_some() {
+        match key {
+            Key::Char('j') | Key::Down => app.menu_move(1),
+            Key::Char('k') | Key::Up => app.menu_move(-1),
+            Key::Enter => app.menu_activate(),
+            _ => app.close_menu(),
+        }
+        return;
+    }
+
+    if matches!(app.view, View::Picker) {
+        handle_picker_key(app, key);
+        return;
+    }
+
     if matches!(app.view, View::Confirm { .. }) {
         match key {
             Key::Esc => app.view = View::Collector,
@@ -99,14 +132,14 @@ fn handle_key(app: &mut App, key: Key) {
             key,
             Key::Esc | Key::Char('h') | Key::Char('q') | Key::Char('?') | Key::F1 | Key::Backspace
         ) {
-            app.view = View::Browse;
+            app.close_help();
         }
         return;
     }
 
     match key {
         Key::Char('q') => app.quit = true,
-        Key::Char('?') | Key::F1 => app.view = View::Help,
+        Key::Char('?') | Key::F1 => app.open_help(),
         Key::Char('j') | Key::Down => app.move_sel(1),
         Key::Char('k') | Key::Up => app.move_sel(-1),
         Key::PageDown => app.move_sel(10),
@@ -114,6 +147,7 @@ fn handle_key(app: &mut App, key: Key) {
         Key::Enter => app.drill(),
         Key::Backspace | Key::Left | Key::Char('h') => go_back(app),
         Key::Char(' ') | Key::Char('d') => app.toggle_mark_selected(),
+        Key::Char('-') => app.open_picker_from_scan(),
         Key::Char('f') => app.open_findings(),
         Key::Char('c') => app.open_collector(),
         Key::Char('x') => {
@@ -135,15 +169,108 @@ fn handle_key(app: &mut App, key: Key) {
     }
 }
 
+/// Vim-style movement over the directory listing. `s` starts the scan.
+fn handle_picker_key(app: &mut App, key: Key) {
+    match key {
+        Key::Char('q') => app.quit = true,
+        Key::Char('?') | Key::F1 => app.open_help(),
+        Key::Char('j') | Key::Down => app.picker_move(1),
+        Key::Char('k') | Key::Up => app.picker_move(-1),
+        Key::PageDown => app.picker_move(10),
+        Key::PageUp => app.picker_move(-10),
+        Key::Char('g') => app.picker_move(isize::MIN / 2),
+        Key::Char('G') => app.picker_move(isize::MAX / 2),
+        Key::Enter | Key::Char('l') | Key::Right => app.picker_enter(),
+        Key::Char('h') | Key::Left | Key::Backspace => app.picker_up(),
+        Key::Char('s') => app.scan_picked(),
+        Key::Esc => app.resume_scan(),
+        _ => {}
+    }
+}
+
 fn go_back(app: &mut App) {
-    if matches!(app.view, View::Browse) {
-        app.go_up_browse();
-    } else {
-        app.go_up();
+    match app.view {
+        View::Picker => app.picker_up(),
+        View::Browse => app.go_up_browse(),
+        _ => app.go_up(),
+    }
+}
+
+/// Right-click selects what is under the cursor, then opens the menu there.
+fn handle_right_click(app: &mut App, hits: &HitMap, x: u16, y: u16) {
+    app.close_menu();
+    if !select_at(app, hits, x, y) {
+        return;
+    }
+    app.open_menu(x, y);
+}
+
+/// Move the selection to the row or slice under the cursor. False when the
+/// cursor is not over anything selectable.
+fn select_at(app: &mut App, hits: &HitMap, x: u16, y: u16) -> bool {
+    match app.view {
+        View::Picker => {
+            let Some(picker) = app.picker.as_ref() else {
+                return false;
+            };
+            match row_index_at(hits.list, y, picker.offset, picker.entries.len()) {
+                Some(i) => {
+                    app.picker_select(i);
+                    true
+                }
+                None => false,
+            }
+        }
+        View::Browse | View::Confirm { .. } => {
+            if let Some(slice) = sunburst::hit_slice(&hits.slices, hits.sunburst, x, y) {
+                let node = slice.node;
+                app.focus_node(node);
+                return true;
+            }
+            match row_index_at(hits.list, y, app.list_offset, app.current_children().len()) {
+                Some(i) => {
+                    app.selected = i;
+                    true
+                }
+                None => false,
+            }
+        }
+        View::Findings => {
+            match row_index_at(hits.list, y, app.list_offset, app.finding_ids().len()) {
+                Some(i) => {
+                    app.findings_selected = i;
+                    true
+                }
+                None => false,
+            }
+        }
+        View::Collector => match row_index_at(hits.list, y, app.list_offset, app.collector.len()) {
+            Some(i) => {
+                app.selected = i;
+                true
+            }
+            None => false,
+        },
+        _ => false,
     }
 }
 
 fn handle_click(app: &mut App, hits: &HitMap, x: u16, y: u16) {
+    if app.menu.is_some() {
+        for (rect, index) in &hits.menu {
+            if rect.contains(x, y) {
+                app.menu_select(*index);
+                app.menu_activate();
+                return;
+            }
+        }
+        app.close_menu();
+        return;
+    }
+    if matches!(app.view, View::Help) {
+        app.close_help();
+        return;
+    }
     let dbl = app.register_click(x, y);
 
     for (rect, action) in &hits.buttons {
@@ -165,38 +292,12 @@ fn handle_click(app: &mut App, hits: &HitMap, x: u16, y: u16) {
         }
     }
 
+    if !select_at(app, hits, x, y) || !dbl {
+        return;
+    }
     match app.view {
-        View::Browse | View::Confirm { .. } => {
-            if let Some(slice) = sunburst::hit_slice(&hits.slices, hits.sunburst, x, y) {
-                let node = slice.node;
-                app.focus_node(node);
-                if dbl {
-                    app.drill();
-                }
-                return;
-            }
-            if let Some(i) =
-                row_index_at(hits.list, y, app.list_offset, app.current_children().len())
-            {
-                app.selected = i;
-                if dbl {
-                    app.drill();
-                }
-            }
-        }
-        View::Findings => {
-            if let Some(i) = row_index_at(hits.list, y, app.list_offset, app.finding_ids().len()) {
-                app.findings_selected = i;
-                if dbl {
-                    app.drill();
-                }
-            }
-        }
-        View::Collector => {
-            if let Some(i) = row_index_at(hits.list, y, app.list_offset, app.collector.len()) {
-                app.selected = i;
-            }
-        }
+        View::Picker => app.picker_enter(),
+        View::Browse | View::Findings | View::Confirm { .. } => app.drill(),
         _ => {}
     }
 }
@@ -223,7 +324,10 @@ fn do_action(app: &mut App, action: Action) {
             app.view = View::Collector;
         }
         Action::Mark => app.toggle_mark_selected(),
-        Action::Help => app.view = View::Help,
+        Action::Help => app.open_help(),
+        Action::Scan => app.scan_picked(),
+        Action::Picker => app.open_picker_from_scan(),
+        Action::BackToScan => app.resume_scan(),
     }
 }
 
@@ -432,6 +536,335 @@ mod tests {
         assert_eq!(app.view, View::Help);
         handle_key(&mut app, Key::Esc);
         assert_eq!(app.view, View::Browse);
+    }
+
+    #[test]
+    fn picker_lists_entries_and_offers_a_scan_chip() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::create_dir(tmp.path().join("projects")).unwrap();
+        fs::write(tmp.path().join("notes.txt"), b"hi").unwrap();
+
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.open_picker(tmp.path());
+        assert_eq!(app.view, View::Picker);
+
+        let mut buf = Buffer::new(90, 24, BG);
+        let hits = draw::draw(&mut buf, &app);
+        let screen = buf.text();
+
+        assert!(
+            screen.contains("Pick a directory to scan"),
+            "picker title:\n{screen}"
+        );
+        assert!(screen.contains("projects/"), "directory row:\n{screen}");
+        assert!(screen.contains("notes.txt"), "file row:\n{screen}");
+        assert!(
+            screen.contains("s scans"),
+            "footer names the target:\n{screen}"
+        );
+        assert!(
+            hits.buttons.iter().any(|(_, a)| *a == Action::Scan),
+            "a Scan chip is clickable"
+        );
+    }
+
+    #[test]
+    fn picker_navigates_and_s_queues_the_scan() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("projects").join("rings")).unwrap();
+
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.open_picker(tmp.path());
+
+        handle_key(&mut app, Key::Enter); // into projects/
+        assert!(
+            app.picker.as_ref().unwrap().dir.ends_with("projects"),
+            "Enter opens the highlighted directory"
+        );
+
+        handle_key(&mut app, Key::Char('s'));
+        let queued = app.pending_scan.clone().expect("s queues a scan");
+        assert!(
+            queued.ends_with("rings"),
+            "s scans the highlighted directory, got {}",
+            queued.display()
+        );
+        app.pending_scan = None;
+
+        handle_key(&mut app, Key::Char('h')); // back up
+        assert!(app
+            .picker
+            .as_ref()
+            .unwrap()
+            .dir
+            .ends_with(tmp.path().file_name().unwrap()));
+
+        handle_key(&mut app, Key::Char('q'));
+        assert!(app.quit);
+    }
+
+    #[test]
+    fn clicking_a_picker_row_selects_and_double_click_opens() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("alpha").join("inner")).unwrap();
+        fs::create_dir(tmp.path().join("beta")).unwrap();
+
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.open_picker(tmp.path());
+        let mut buf = Buffer::new(90, 24, BG);
+        let hits = draw::draw(&mut buf, &app);
+
+        handle_click(&mut app, &hits, hits.list.x + 2, hits.list.y + 1);
+        assert_eq!(app.picker.as_ref().unwrap().selected, 1, "second row");
+
+        handle_click(&mut app, &hits, hits.list.x + 2, hits.list.y);
+        handle_click(&mut app, &hits, hits.list.x + 2, hits.list.y);
+        assert!(
+            app.picker.as_ref().unwrap().dir.ends_with("alpha"),
+            "double-click opens the directory"
+        );
+    }
+
+    #[test]
+    fn help_from_the_picker_returns_to_the_picker() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.open_picker(tmp.path());
+
+        handle_key(&mut app, Key::Char('?'));
+        assert_eq!(app.view, View::Help);
+        handle_key(&mut app, Key::Esc);
+        assert_eq!(app.view, View::Picker, "help returns where it came from");
+
+        // A click anywhere closes the overlay too.
+        handle_key(&mut app, Key::F1);
+        let mut buf = Buffer::new(80, 24, BG);
+        let hits = draw::draw(&mut buf, &app);
+        assert!(
+            hits.buttons.iter().any(|(_, a)| *a == Action::Back),
+            "help has a Close button"
+        );
+        handle_click(&mut app, &hits, 4, 4);
+        assert_eq!(app.view, View::Picker);
+    }
+
+    #[test]
+    fn right_click_opens_a_context_menu_that_marks_and_deletes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.tree = Some(tree);
+        app.view = View::Browse;
+
+        let mut buf = Buffer::new(100, 28, BG);
+        let hits = draw::draw(&mut buf, &app);
+        let row_y = hits.list.y + 1;
+        handle_right_click(&mut app, &hits, hits.list.x + 3, row_y);
+
+        let menu = app.menu.as_ref().expect("right-click opens a menu");
+        let labels: Vec<String> = menu.items.iter().map(|(_, l)| l.clone()).collect();
+        assert!(
+            labels.iter().any(|l| l.starts_with("Mark ")),
+            "menu marks the target: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.starts_with("Delete ")),
+            "menu deletes the target: {labels:?}"
+        );
+        assert_eq!(app.selected, 1, "right-click selects the row it opened on");
+
+        // The menu paints over the view and its rows are clickable.
+        let mut buf = Buffer::new(100, 28, BG);
+        let hits = draw::draw(&mut buf, &app);
+        assert!(!hits.menu.is_empty(), "menu rows are hit-tested");
+        let screen = buf.text();
+        assert!(screen.contains("Delete "), "menu is painted:\n{screen}");
+
+        let marked_path = app.selected_path().expect("a selected path");
+        let mark_row = hits
+            .menu
+            .iter()
+            .find(|(_, i)| {
+                matches!(
+                    app.menu.as_ref().unwrap().items[*i].0,
+                    crate::tui::app::MenuAction::Mark
+                )
+            })
+            .expect("a Mark row")
+            .0;
+        handle_click(&mut app, &hits, mark_row.x + 1, mark_row.y);
+        assert!(app.menu.is_none(), "activating an item closes the menu");
+        assert!(
+            app.collector
+                .contains_path(std::path::Path::new(&marked_path)),
+            "clicking Mark collects {marked_path}"
+        );
+    }
+
+    #[test]
+    fn context_menu_delete_marks_then_asks_to_confirm() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.tree = Some(tree);
+        app.view = View::Browse;
+
+        let mut buf = Buffer::new(100, 28, BG);
+        let hits = draw::draw(&mut buf, &app);
+        handle_right_click(&mut app, &hits, hits.list.x + 3, hits.list.y);
+        let path = app.selected_path().expect("a selected path");
+
+        let delete_i = app
+            .menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .position(|(a, _)| *a == crate::tui::app::MenuAction::Delete)
+            .expect("a Delete item");
+        app.menu_select(delete_i);
+        app.menu_activate();
+
+        assert!(
+            matches!(app.view, View::Confirm { .. }),
+            "Delete goes to the confirm modal, never straight to unlink"
+        );
+        assert!(
+            app.collector.contains_path(std::path::Path::new(&path)),
+            "the target is in the collector, still on disk"
+        );
+        assert!(
+            std::path::Path::new(&path).exists(),
+            "nothing is removed before the confirm"
+        );
+    }
+
+    #[test]
+    fn escape_closes_the_context_menu_without_acting() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.tree = Some(tree);
+        app.view = View::Browse;
+
+        let mut buf = Buffer::new(100, 28, BG);
+        let hits = draw::draw(&mut buf, &app);
+        handle_right_click(&mut app, &hits, hits.list.x + 3, hits.list.y);
+        assert!(app.menu.is_some());
+
+        handle_key(&mut app, Key::Esc);
+        assert!(app.menu.is_none(), "Esc closes the menu");
+        assert!(app.collector.is_empty(), "and marks nothing");
+    }
+
+    #[test]
+    fn right_click_in_the_picker_offers_scan_and_open() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::create_dir(tmp.path().join("data")).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.open_picker(tmp.path());
+
+        let mut buf = Buffer::new(90, 24, BG);
+        let hits = draw::draw(&mut buf, &app);
+        handle_right_click(&mut app, &hits, hits.list.x + 2, hits.list.y);
+
+        let menu = app.menu.as_ref().expect("picker menu");
+        let actions: Vec<crate::tui::app::MenuAction> =
+            menu.items.iter().map(|(a, _)| *a).collect();
+        assert!(actions.contains(&crate::tui::app::MenuAction::ScanHere));
+        assert!(actions.contains(&crate::tui::app::MenuAction::Open));
+
+        app.menu_select(0);
+        app.menu_activate();
+        assert!(
+            app.pending_scan.as_ref().unwrap().ends_with("data"),
+            "Scan queues the directory the menu opened on"
+        );
+    }
+
+    #[test]
+    fn dash_reopens_the_picker_at_the_directory_in_view_and_esc_returns() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.tree = Some(tree);
+        app.view = View::Browse;
+        app.drill(); // into the largest child
+
+        let browsing = app
+            .tree()
+            .map(|t| t.get(t.node_at(&app.cwd)).path.clone())
+            .unwrap();
+        handle_key(&mut app, Key::Char('-'));
+        assert_eq!(app.view, View::Picker);
+        assert_eq!(
+            app.picker.as_ref().unwrap().dir,
+            std::path::absolute(&browsing).unwrap(),
+            "the picker opens where we were browsing"
+        );
+        assert!(app.tree.is_some(), "the scan is kept while we look around");
+
+        handle_key(&mut app, Key::Esc);
+        assert_eq!(app.view, View::Browse, "Esc drops back into the scan");
+        assert!(!app.cwd.is_empty(), "and keeps the place we had drilled to");
+    }
+
+    #[test]
+    fn picker_from_a_scan_offers_back_to_scan_and_can_rescan() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.tree = Some(tree);
+        app.view = View::Browse;
+        handle_key(&mut app, Key::Char('-'));
+
+        let mut buf = Buffer::new(100, 28, BG);
+        let hits = draw::draw(&mut buf, &app);
+        let back = hits
+            .buttons
+            .iter()
+            .find(|(_, a)| *a == Action::BackToScan)
+            .expect("a Back to scan chip once a tree exists");
+        assert!(
+            buf.text().contains("Back to scan"),
+            "the way back is named in the footer:\n{}",
+            buf.text()
+        );
+
+        handle_click(&mut app, &hits, back.0.x, back.0.y);
+        assert_eq!(app.view, View::Browse);
+
+        // Picking a different directory starts a fresh scan.
+        handle_key(&mut app, Key::Char('-'));
+        handle_key(&mut app, Key::Char('s'));
+        assert!(app.pending_scan.is_some(), "s queues the new root");
+    }
+
+    #[test]
+    fn browse_footer_keeps_the_picker_chip_and_the_help_hint() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.tree = Some(tree);
+        app.view = View::Browse;
+
+        let mut buf = Buffer::new(100, 28, BG);
+        let hits = draw::draw(&mut buf, &app);
+        assert!(
+            hits.buttons.iter().any(|(_, a)| *a == Action::Picker),
+            "the Picker chip is clickable from a scan"
+        );
+        assert!(
+            buf.text().contains("? help"),
+            "the standing hint survives the extra chip:\n{}",
+            buf.text()
+        );
     }
 
     fn write_nested_fixture(root: &std::path::Path) {

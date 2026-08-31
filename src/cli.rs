@@ -8,7 +8,7 @@ use crate::logo::LOGO;
 pub const KEY_LINES: &[&str] = &[
     "j k  ↑ ↓  PgUp PgDn   move selection",
     "Enter                 drill into the selected directory",
-    "h Backspace ←         go up one directory",
+    "h Backspace ←         go up one directory  ·  -  back to the picker",
     "Space  d              mark or unmark for the delete collector",
     "f                     Temp & cache findings",
     "c                     delete collector",
@@ -16,6 +16,8 @@ pub const KEY_LINES: &[&str] = &[
     "e                     export current view as rings-export.csv",
     "?  F1                 this help",
     "q                     quit",
+    "Picker (rings, no PATH)  j k move · Enter open · h up · s scan · Esc back",
+    "Right-click            context menu: open, mark, delete this file or dir",
     "Mouse  click slice/row to select · double-click to drill · click footer",
     "Delete is never automatic. The collector shows paths and total size.",
     "As root/Administrator, type DELETE to unlink. Deletes are logged.",
@@ -34,7 +36,10 @@ USAGE:
     rings help
 
 ARGS:
-    [PATH]    Directory or file to scan (default: current directory)
+    [PATH]    Directory or file to scan. With no PATH an interactive TUI
+              opens the directory picker in the current directory; pick a
+              directory there and press s to scan it. Piped or scripted
+              runs with no PATH still scan the current directory.
 
 OPTIONS:
     --json               Write the analyzed tree as JSON to stdout and exit
@@ -208,6 +213,20 @@ mod tests {
     }
 
     #[test]
+    fn no_path_is_the_picker_signal() {
+        assert!(
+            parse(&[]).unwrap().path.is_none(),
+            "no PATH means the TUI opens the directory picker"
+        );
+        assert_eq!(
+            parse(&["--offline"]).unwrap().path,
+            None,
+            "flags alone still leave the path unset"
+        );
+        assert_eq!(parse(&["/var"]).unwrap().path, Some(PathBuf::from("/var")));
+    }
+
+    #[test]
     fn help_text_contains_logo_and_key_bindings() {
         let text = help_text();
         assert!(
@@ -227,6 +246,9 @@ mod tests {
             "q                     quit",
             "Mouse",
             "double-click",
+            "Right-click",
+            "Picker (rings, no PATH)",
+            "back to the picker",
             "--plain",
             "--no-tui",
             "--offline",

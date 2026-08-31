@@ -4,7 +4,7 @@ use crate::delete::needs_typed_confirm;
 use crate::logo;
 use crate::size::{group_u64, human_bytes};
 use crate::term::{Buffer, Cell, Rect, Rgb};
-use crate::tui::app::{Action, App, View};
+use crate::tui::app::{Action, App, Menu, MenuAction, View};
 use crate::tui::sunburst::{self, Slice};
 use crate::tui::theme::{
     self, category_color, ACCENT, BG, CHIP, DANGER, MUTED, PALETTE, PANEL, SELECT_BG, SMALLER,
@@ -17,6 +17,8 @@ pub struct HitMap {
     pub buttons: Vec<(Rect, Action)>,
     pub crumbs: Vec<(Rect, usize)>,
     pub slices: Vec<Slice>,
+    /// Context-menu rows, by item index.
+    pub menu: Vec<(Rect, usize)>,
 }
 
 impl HitMap {
@@ -27,27 +29,82 @@ impl HitMap {
             buttons: Vec::new(),
             crumbs: Vec::new(),
             slices: Vec::new(),
+            menu: Vec::new(),
         }
     }
 }
 
 pub fn draw(buf: &mut Buffer, app: &App) -> HitMap {
     buf.fill(buf.area(), BG);
-    match app.view {
+    let mut hits = match app.view {
+        View::Picker => draw_picker(buf, app),
         View::Scanning => {
             draw_scan(buf, app);
             HitMap::empty()
         }
-        View::Help => {
-            draw_help(buf);
-            HitMap::empty()
-        }
+        View::Help => draw_help(buf),
         View::Confirm { .. } => {
             let mut hits = draw_main(buf, app);
             draw_confirm_modal(buf, app, &mut hits);
             hits
         }
         _ => draw_main(buf, app),
+    };
+    if let Some(menu) = app.menu.as_ref() {
+        draw_menu(buf, menu, &mut hits);
+    }
+    hits
+}
+
+/// Right-click menu, anchored at the cursor and clamped to the screen.
+fn draw_menu(buf: &mut Buffer, menu: &Menu, hits: &mut HitMap) {
+    let w = menu.width().min(buf.width);
+    let h = menu.height().min(buf.height);
+    if w < 4 || h < 3 {
+        return;
+    }
+    let rect = Rect {
+        x: menu.x.min(buf.width.saturating_sub(w)),
+        y: menu.y.min(buf.height.saturating_sub(h)),
+        width: w,
+        height: h,
+    };
+    buf.fill(rect, BG);
+    let title = truncate(&menu.title, rect.width.saturating_sub(4) as usize);
+    let inner = draw_box(buf, rect, &format!(" {title} "), MUTED, ACCENT);
+
+    for (i, (action, label)) in menu.items.iter().enumerate() {
+        let y = inner.y + i as u16;
+        if y >= inner.bottom() {
+            break;
+        }
+        let sel = i == menu.selected;
+        let row_bg = if sel { SELECT_BG } else { BG };
+        buf.fill(
+            Rect {
+                x: inner.x,
+                y,
+                width: inner.width,
+                height: 1,
+            },
+            row_bg,
+        );
+        let fg = match action {
+            MenuAction::Delete => DANGER,
+            MenuAction::Cancel => MUTED,
+            _ => TEXT,
+        };
+        let text = truncate(label, inner.width.saturating_sub(2) as usize);
+        buf.print_styled(inner.x + 1, y, &text, fg, row_bg, sel);
+        hits.menu.push((
+            Rect {
+                x: inner.x,
+                y,
+                width: inner.width,
+                height: 1,
+            },
+            i,
+        ));
     }
 }
 
@@ -107,6 +164,98 @@ fn draw_scan(buf: &mut Buffer, app: &App) {
     buf.print(hx, y, hint, MUTED, BG);
 }
 
+fn draw_picker(buf: &mut Buffer, app: &App) -> HitMap {
+    let footer_h = FOOTER_H.min(buf.height);
+    let body = Rect {
+        x: 0,
+        y: 1,
+        width: buf.width,
+        height: buf.height.saturating_sub(1 + footer_h),
+    };
+    let footer = Rect {
+        x: 0,
+        y: buf.height.saturating_sub(footer_h),
+        width: buf.width,
+        height: footer_h,
+    };
+
+    let x = buf.print_styled(1, 0, "◎ rings ", TEXT, BG, true);
+    let dir = app
+        .picker
+        .as_ref()
+        .map(|p| p.dir.display().to_string())
+        .unwrap_or_default();
+    buf.print(
+        x,
+        0,
+        &truncate(&dir, buf.width.saturating_sub(x + 1) as usize),
+        ACCENT,
+        BG,
+    );
+
+    let inner = draw_box(buf, body, " Pick a directory to scan ", ACCENT, MUTED);
+    let mut hits = HitMap::empty();
+    hits.list = inner;
+    hits.buttons = draw_footer(buf, app, footer);
+
+    let Some(picker) = app.picker.as_ref() else {
+        return hits;
+    };
+    if picker.entries.is_empty() {
+        buf.print(
+            inner.x + 1,
+            inner.y,
+            "empty — press s to scan this directory, h to go up",
+            MUTED,
+            BG,
+        );
+        return hits;
+    }
+
+    let h = inner.height as usize;
+    let start = picker.offset.min(picker.entries.len().saturating_sub(1));
+    for (row, (i, entry)) in picker
+        .entries
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(h)
+        .enumerate()
+    {
+        let y = inner.y + row as u16;
+        let sel = i == picker.selected;
+        let row_bg = if sel { SELECT_BG } else { BG };
+        if sel {
+            buf.fill(
+                Rect {
+                    x: inner.x,
+                    y,
+                    width: inner.width,
+                    height: 1,
+                },
+                row_bg,
+            );
+        }
+        let (glyph, color) = if entry.is_dir {
+            ("▸", ACCENT)
+        } else {
+            ("·", SMALLER)
+        };
+        let name = if entry.is_dir {
+            format!("{}/", entry.name)
+        } else {
+            entry.name.clone()
+        };
+        let mut x = buf.print(inner.x, y, " ", color, row_bg);
+        x = buf.print(x, y, glyph, color, row_bg);
+        x = buf.print(x, y, " ", color, row_bg);
+        let name_w = inner.right().saturating_sub(x + 1) as usize;
+        let fg = if entry.is_dir { TEXT } else { MUTED };
+        buf.print_styled(x, y, &truncate(&name, name_w), fg, row_bg, sel);
+    }
+    hits
+}
+
 fn draw_main(buf: &mut Buffer, app: &App) -> HitMap {
     let header = Rect {
         x: 0,
@@ -135,6 +284,7 @@ fn draw_main(buf: &mut Buffer, app: &App) -> HitMap {
         buttons: Vec::new(),
         crumbs,
         slices: Vec::new(),
+        menu: Vec::new(),
     };
 
     match app.view {
@@ -417,6 +567,30 @@ fn draw_footer(buf: &mut Buffer, app: &App, area: Rect) -> Vec<(Rect, Action)> {
 }
 
 fn draw_footer_stats(buf: &mut Buffer, app: &App, y: u16, width: u16) {
+    if let (View::Picker, Some(picker)) = (&app.view, app.picker.as_ref()) {
+        let dirs = picker.entries.iter().filter(|e| e.is_dir).count();
+        let x = buf.print(
+            1,
+            y,
+            &format!(
+                "{} directories · {} entries  ·  s scans ",
+                group_u64(dirs as u64),
+                group_u64(picker.entries.len() as u64)
+            ),
+            MUTED,
+            BG,
+        );
+        let target = picker.scan_target().display().to_string();
+        buf.print_styled(
+            x,
+            y,
+            &truncate(&target, width.saturating_sub(x + 1) as usize),
+            TEXT,
+            BG,
+            true,
+        );
+        return;
+    }
     let Some(tree) = app.tree() else {
         return;
     };
@@ -453,6 +627,36 @@ struct Chip {
 
 fn footer_chips(app: &App) -> Vec<Chip> {
     let mut chips = Vec::new();
+    if matches!(app.view, View::Picker) {
+        chips.push(Chip {
+            action: Action::Scan,
+            label: " Scan this ".into(),
+            keep: 0,
+        });
+        chips.push(Chip {
+            action: Action::Back,
+            label: " Up ".into(),
+            keep: 2,
+        });
+        if app.tree().is_some() {
+            chips.push(Chip {
+                action: Action::BackToScan,
+                label: " Back to scan ".into(),
+                keep: 1,
+            });
+        }
+        chips.push(Chip {
+            action: Action::Help,
+            label: " Keys ".into(),
+            keep: 3,
+        });
+        chips.push(Chip {
+            action: Action::Quit,
+            label: " Quit ".into(),
+            keep: 1,
+        });
+        return chips;
+    }
     if matches!(app.view, View::Collector) && !app.collector.is_empty() {
         chips.push(Chip {
             action: Action::ConfirmDelete,
@@ -469,6 +673,11 @@ fn footer_chips(app: &App) -> Vec<Chip> {
         action: Action::Collector,
         label: format!(" Collector ({}) ", app.collector.len()),
         keep: 2,
+    });
+    chips.push(Chip {
+        action: Action::Picker,
+        label: " Picker ".into(),
+        keep: 4,
     });
     chips.push(Chip {
         action: Action::Export,
@@ -583,6 +792,19 @@ fn hints_fit(hints: &[(&str, &str)], width: u16, chips_end: u16) -> bool {
 
 fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
     match app.view {
+        View::Picker if app.tree().is_some() => vec![
+            ("j/k", "move"),
+            ("Enter", "open"),
+            ("s", "scan"),
+            ("Esc", "back to scan"),
+        ],
+        View::Picker => vec![
+            ("j/k", "move"),
+            ("Enter", "open"),
+            ("h", "up"),
+            ("s", "scan"),
+            ("?", "help"),
+        ],
         View::Collector => vec![
             ("j/k", "move"),
             ("Space", "unmark"),
@@ -717,7 +939,7 @@ fn draw_confirm_modal(buf: &mut Buffer, app: &App, hits: &mut HitMap) {
     hits.buttons.push((ok, Action::ConfirmDelete));
 }
 
-fn draw_help(buf: &mut Buffer) {
+fn draw_help(buf: &mut Buffer) -> HitMap {
     let (lw, lh) = logo::size();
     // Use the full screen so a 24-row SSH session still shows every binding.
     let rect = Rect {
@@ -750,6 +972,17 @@ fn draw_help(buf: &mut Buffer) {
         );
         y = y.saturating_add(1);
     }
+
+    let close = Rect {
+        x: inner.x + 2,
+        y: inner.bottom().saturating_sub(1),
+        width: 7,
+        height: 1,
+    };
+    buf.print_styled(close.x, close.y, " Close ", BG, ACCENT, true);
+    let mut hits = HitMap::empty();
+    hits.buttons.push((close, Action::Back));
+    hits
 }
 
 /// Color the shared logo: gold rays, nested ring hues, bright center.

@@ -68,7 +68,7 @@ fn run(cli: Cli) -> Result<(), String> {
         return Ok(());
     }
 
-    rings::tui::run(path, opts, cli.apparent)
+    rings::tui::run(cli.path.clone(), opts, cli.apparent)
 }
 
 fn scan_headless(
