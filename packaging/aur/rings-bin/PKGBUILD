@@ -21,6 +21,6 @@ sha256sums_aarch64=('95647a952c37ce97e481cea5d76fedcd02a1f63b7ff62da6199691f66b2
 sha256sums_armv7h=('66f6c042c69c92e20742feba6238be479a785ab2c0ad3f1a26225134ea89d77c')
 
 package() {
-	install -Dm755 rings "$pkgdir/usr/bin/rings"
-	install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+	install -Dm755 "$srcdir/rings" "$pkgdir/usr/bin/rings"
+	install -Dm644 "$srcdir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

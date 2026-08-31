@@ -42,10 +42,7 @@ fn aur_pkgbuild_is_bin_and_matches_crate_version() {
         pkgbuild.contains("provides=('rings')") && pkgbuild.contains("conflicts=('rings')"),
         "provides/conflicts rings"
     );
-    assert!(
-        pkgbuild.contains("license=('MIT')"),
-        "MIT license"
-    );
+    assert!(pkgbuild.contains("license=('MIT')"), "MIT license");
     let has_rust_dep = pkgbuild.lines().any(|line| {
         let t = line.trim();
         !t.starts_with('#')
@@ -74,15 +71,18 @@ fn build_deb_sh_syntax() {
         .arg(repo_root().join("packaging/debian/build-deb.sh"))
         .status()
         .expect("sh -n build-deb.sh");
-    assert!(status.success(), "sh -n packaging/debian/build-deb.sh failed");
+    assert!(
+        status.success(),
+        "sh -n packaging/debian/build-deb.sh failed"
+    );
 }
 
 #[cfg(unix)]
 #[test]
 fn build_deb_wraps_dummy_binary_without_libc_depends() {
-    let dpkg = Command::new("dpkg-deb").arg("--version").status();
+    let dpkg = Command::new("dpkg-deb").arg("--version").output();
     match dpkg {
-        Ok(status) if status.success() => {}
+        Ok(out) if out.status.success() => {}
         _ => return, // macOS CI has no dpkg-deb
     }
 
