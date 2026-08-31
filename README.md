@@ -16,7 +16,21 @@ Works on Linux (Debian, Ubuntu, RHEL/Fedora/CentOS, Arch), Raspberry Pi OS / Ras
 
 ## Install
 
+Detect OS/arch and install the matching binary from the latest GitHub Release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zachwilke/rings/main/install.sh | sh
+```
+
+```powershell
+irm https://raw.githubusercontent.com/zachwilke/rings/main/install.ps1 | iex
+```
+
+The one-liner lives on `main` (so the platform map stays current) and fetches the latest published release, not a pinned tag. Pin with `RING_VERSION=v0.1.2`; install to a chosen directory with `RING_PREFIX`. Unix needs `curl` or `wget`, plus `xz` (`apt install xz-utils` / `brew install xz`).
+
 Linux downloads are one static musl binary per arch — the same file for Debian/Ubuntu, RHEL/Fedora/CentOS, and Arch. No glibc version soup, no distro repo.
+
+Manual per-platform download (fallback):
 
 ### Linux
 
