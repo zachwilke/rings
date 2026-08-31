@@ -9,9 +9,7 @@ use crate::constants::{
 };
 use crate::scan::Tree;
 use crate::term::{Buffer, Cell, Rect, Rgb};
-use crate::tui::theme::{
-    brighten, category_color, dim_color, separator_color, BG, PALETTE, SMALLER,
-};
+use crate::tui::theme::{self, brighten, category_color, dim_color, separator_color};
 
 #[derive(Clone, Debug)]
 pub struct Slice {
@@ -67,6 +65,7 @@ fn layout(
     rings: usize,
     out: &mut Vec<Slice>,
 ) {
+    let th = theme::current();
     if ring >= rings {
         return;
     }
@@ -120,7 +119,7 @@ fn layout(
             end,
             ring,
             node: id,
-            color: dim_color(SMALLER, ring, rings),
+            color: dim_color(th.smaller, ring, rings),
             grouped: true,
         });
     }
@@ -134,11 +133,12 @@ fn slice_color(
     rings: usize,
     selected: Option<usize>,
 ) -> Rgb {
+    let th = theme::current();
     let cat = tree.get(id).category;
     let base = if cat != Category::Normal {
         category_color(cat)
     } else {
-        PALETTE[color_i % PALETTE.len()]
+        th.palette[color_i % th.palette.len()]
     };
     let mut c = dim_color(base, ring, rings);
     if selected == Some(id) || selected.is_some_and(|s| is_descendant(tree, s, id)) {
@@ -412,6 +412,7 @@ fn paint_braille(
     y: u16,
     dots: [[Option<Rgb>; BRAILLE_COLS]; BRAILLE_ROWS],
 ) {
+    let th = theme::current();
     let mut colors: Vec<(Rgb, usize)> = Vec::new();
     let mut on_disk = 0usize;
     for row in dots.iter() {
@@ -436,7 +437,7 @@ fn paint_braille(
     let bg = if colors.len() == 2 && all_on {
         colors[1].0
     } else {
-        BG
+        th.bg
     };
     let mut bits = 0u8;
     for row in 0..BRAILLE_ROWS {
@@ -586,23 +587,25 @@ mod tests {
     }
 
     fn render_fixture(selected: Option<usize>) -> (Buffer, Vec<Slice>, Rect) {
+        let th = theme::current();
         let tree = fixture_tree();
         let area = dump_area();
         let rings = rings_for(area);
         let slices = build_slices(&tree, 0, false, selected, rings);
-        let mut buf = Buffer::new(area.width, area.height, BG);
+        let mut buf = Buffer::new(area.width, area.height, th.bg);
         render(&mut buf, area, &slices);
         (buf, slices, area)
     }
 
     /// Braille buffer → binary PPM (each cell is 2×4 pixels, scaled up).
     fn write_ppm(buf: &Buffer, path: &Path, scale: u32) {
+        let th = theme::current();
         let w = buf.width as u32 * BRAILLE_COLS as u32 * scale;
         let h = buf.height as u32 * BRAILLE_ROWS as u32 * scale;
         let mut px = vec![0u8; (w * h * 3) as usize];
         for y in 0..buf.height {
             for x in 0..buf.width {
-                let cell = buf.get(x, y).cloned().unwrap_or(Cell::blank(BG));
+                let cell = buf.get(x, y).cloned().unwrap_or(Cell::blank(th.bg));
                 let dots = raster_cell(cell);
                 for row in 0..BRAILLE_ROWS {
                     for col in 0..BRAILLE_COLS {
@@ -675,25 +678,26 @@ mod tests {
 
     #[test]
     fn braille_glyph_uses_unicode_dot_order() {
+        let th = theme::current();
         assert_eq!(braille_char(0x01), '\u{2801}', "dot 1 is top-left");
         assert_eq!(braille_char(0x08), '\u{2808}', "dot 4 is top-right");
         assert_eq!(braille_char(0x40), '\u{2840}', "dot 7 is bottom-left");
         assert_eq!(braille_char(0x80), '\u{2880}', "dot 8 is bottom-right");
         assert_eq!(braille_char(0xFF), '\u{28FF}', "all eight dots");
         let dots = [
-            [Some(PALETTE[0]), None],
+            [Some(th.palette[0]), None],
             [None, None],
             [None, None],
-            [None, Some(PALETTE[0])],
+            [None, Some(th.palette[0])],
         ];
-        let mut buf = Buffer::new(1, 1, BG);
+        let mut buf = Buffer::new(1, 1, th.bg);
         paint_braille(&mut buf, 0, 0, dots);
         let ch = buf.get(0, 0).unwrap().ch;
         assert_eq!(ch, braille_char(0x01 | 0x80), "top-left + bottom-right");
         let raster = raster_cell(*buf.get(0, 0).unwrap());
-        assert_eq!(raster[0][0], PALETTE[0]);
-        assert_eq!(raster[3][1], PALETTE[0]);
-        assert_eq!(raster[0][1], BG);
+        assert_eq!(raster[0][0], th.palette[0]);
+        assert_eq!(raster[3][1], th.palette[0]);
+        assert_eq!(raster[0][1], th.bg);
     }
 
     #[test]
@@ -736,6 +740,7 @@ mod tests {
 
     #[test]
     fn dust_joins_smaller_objects() {
+        let th = theme::current();
         let tree = grouping_tree();
         let slices = build_slices(&tree, 0, false, None, 4);
         let own: Vec<&str> = slices
@@ -754,18 +759,19 @@ mod tests {
         assert_eq!(grouped[0].node, 0, "grouped remainder points at the parent");
         assert_eq!(
             grouped[0].color,
-            dim_color(SMALLER, 0, 4),
+            dim_color(th.smaller, 0, 4),
             "leftover keeps the muted smaller-objects color"
         );
     }
 
     #[test]
     fn paint_and_hit_use_the_same_polar_map() {
+        let th = theme::current();
         let tree = fixture_tree();
         let area = dump_area();
         let rings = rings_for(area);
         let slices = build_slices(&tree, 0, false, Some(11), rings);
-        let mut buf = Buffer::new(area.width, area.height, BG);
+        let mut buf = Buffer::new(area.width, area.height, th.bg);
         render(&mut buf, area, &slices);
         let geo = geometry(area).unwrap();
 

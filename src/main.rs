@@ -29,6 +29,12 @@ fn main() {
         println!("rings {VERSION}");
         return;
     }
+    if let Some(name) = &cli.theme {
+        if let Err(e) = rings::tui::theme::set(name) {
+            eprintln!("rings: {e}");
+            std::process::exit(2);
+        }
+    }
     rings::update::cleanup_replaced_exe();
     rings::update::maybe_offer_and_apply(&cli);
     if let Err(e) = run(cli) {

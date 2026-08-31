@@ -4,25 +4,81 @@ use std::path::PathBuf;
 
 use crate::logo::LOGO;
 
-/// Every TUI binding, shared by `rings help`, `--help`, and the help overlay.
-pub const KEY_LINES: &[&str] = &[
-    "j k  ↑ ↓  PgUp PgDn   move selection",
-    "Enter                 drill into the selected directory",
-    "h Backspace ←         go up one directory  ·  -  back to the picker",
-    "Space  d              mark or unmark for the delete collector",
-    "f                     Temp & cache findings",
-    "c                     delete collector",
-    "x                     confirm delete (from collector)",
-    "e                     export current view as rings-export.csv",
-    "?  F1                 this help",
-    "q                     quit",
-    "Picker (rings, no PATH)  j k move · Enter open · h up · s scan · Esc back",
-    "Right-click            context menu: open, mark, delete this file or dir",
-    "Mouse  click slice/row to select · double-click to drill · click footer",
-    "Delete is never automatic. The collector shows paths and total size.",
-    "As root/Administrator, type DELETE to unlink. Deletes are logged.",
-    "Esc / ? / F1 / h      close this help",
+/// One titled group of bindings. Shared by `rings help`, `--help`, and the
+/// help overlay so the three never drift apart.
+pub struct KeyGroup {
+    pub title: &'static str,
+    pub keys: &'static [(&'static str, &'static str)],
+    /// Muted line under the group; explains a rule, not a key.
+    pub note: Option<&'static str>,
+}
+
+/// Keys stay within 13 columns, descriptions and notes within 22 and 37,
+/// so two groups sit side by side with a margin on an 80-column terminal.
+pub const KEY_GROUPS: &[KeyGroup] = &[
+    KeyGroup {
+        title: "Navigate",
+        keys: &[
+            ("j k  ↑ ↓", "move selection"),
+            ("PgUp PgDn", "move by a page"),
+            ("g  G", "first / last"),
+            ("Enter", "drill into directory"),
+            ("h Backspace ←", "go up one directory"),
+            ("-", "back to the picker"),
+        ],
+        note: None,
+    },
+    KeyGroup {
+        title: "Views",
+        keys: &[
+            ("f", "Temp & cache findings"),
+            ("c", "delete collector"),
+            ("e", "export view to CSV"),
+            ("?  F1", "this help"),
+            ("q", "quit"),
+        ],
+        note: None,
+    },
+    KeyGroup {
+        title: "Delete",
+        keys: &[
+            ("Space  d", "mark or unmark"),
+            ("x", "confirm from collector"),
+        ],
+        note: Some("Never automatic · root types DELETE"),
+    },
+    KeyGroup {
+        title: "Picker",
+        keys: &[
+            ("Enter  l", "open directory"),
+            ("h Backspace", "go up"),
+            ("s", "scan highlighted dir"),
+            ("Esc", "back to the scan"),
+        ],
+        note: Some("Opens with no PATH, or on -"),
+    },
+    KeyGroup {
+        title: "Mouse",
+        keys: &[
+            ("click", "select · click footer"),
+            ("double-click", "drill in"),
+            ("right-click", "context menu"),
+            ("wheel", "scroll"),
+            ("hover", "highlight · slice info"),
+        ],
+        note: None,
+    },
 ];
+
+/// Widest key label across every group.
+pub fn key_column_width() -> usize {
+    KEY_GROUPS
+        .iter()
+        .flat_map(|g| g.keys.iter())
+        .map(|(k, _)| k.chars().count())
+        .max()
+        .unwrap_or(0)
+}
 
 const USAGE: &str = "\
 rings — disk usage sunburst for Linux, macOS, and Windows
@@ -49,6 +105,8 @@ OPTIONS:
     --one-file-system    Stay on one filesystem (default)
     --all-filesystems    Descend into other mounted filesystems
     --apparent           Size by apparent bytes (st_size) instead of used
+    --theme <NAME>       Color theme: rings (default), nord, gruvbox, dracula,
+                         solarized-dark, mono
     -h, --help           Print help
     -V, --version        Print version
 
@@ -59,6 +117,9 @@ never enter the TUI, even in a terminal.
 An interactive TUI launch checks GitHub Releases for a newer rings and
 offers to install it. --offline or RINGS_NO_UPDATE=1 skips the check.
 Pipes, --plain, --json, --csv, --help, and --version never check.
+
+Colors follow the terminal: 24-bit where COLORTERM says so, else 256, else
+16. NO_COLOR disables color; RINGS_COLORS=16|256|truecolor overrides.
 
 Full-disk scan:
 
@@ -82,13 +143,20 @@ pub fn help_text() -> String {
     }
     out.push('\n');
     out.push_str(USAGE);
-    for line in KEY_LINES {
-        if line.is_empty() {
+    let kw = key_column_width();
+    for (i, group) in KEY_GROUPS.iter().enumerate() {
+        if i > 0 {
             out.push('\n');
-        } else {
-            out.push_str("    ");
-            out.push_str(line);
-            out.push('\n');
+        }
+        out.push_str("  ");
+        out.push_str(&group.title.to_ascii_uppercase());
+        out.push('\n');
+        for (key, desc) in group.keys {
+            let pad = kw.saturating_sub(key.chars().count());
+            out.push_str(&format!("    {key}{}  {desc}\n", " ".repeat(pad)));
+        }
+        if let Some(note) = group.note {
+            out.push_str(&format!("    {note}\n"));
         }
     }
     out
@@ -103,6 +171,7 @@ pub struct Cli {
     pub all_filesystems: bool,
     pub apparent: bool,
     pub offline: bool,
+    pub theme: Option<String>,
     pub help: bool,
     pub version: bool,
 }
@@ -125,6 +194,15 @@ impl Cli {
                 "--one-file-system" => cli.all_filesystems = false,
                 "--all-filesystems" => cli.all_filesystems = true,
                 "--apparent" => cli.apparent = true,
+                "--theme" => {
+                    let name = it
+                        .next()
+                        .ok_or_else(|| "--theme requires a name".to_string())?;
+                    cli.theme = Some(name);
+                }
+                s if s.starts_with("--theme=") => {
+                    cli.theme = Some(s["--theme=".len()..].to_string());
+                }
                 "-h" | "--help" | "help" => cli.help = true,
                 "-V" | "--version" => cli.version = true,
                 s if s.starts_with("--csv=") => {
@@ -197,6 +275,12 @@ mod tests {
 
         let cli = parse(&["help"]).unwrap();
         assert!(cli.help);
+
+        let cli = parse(&["--theme", "nord", "/"]).unwrap();
+        assert_eq!(cli.theme.as_deref(), Some("nord"));
+        let cli = parse(&["--theme=mono"]).unwrap();
+        assert_eq!(cli.theme.as_deref(), Some("mono"));
+        assert!(parse(&["--theme"]).is_err());
     }
 
     #[test]
@@ -234,35 +318,42 @@ mod tests {
             "help must start from the shared logo"
         );
         for needle in [
-            "j k",
-            "Enter",
-            "Backspace",
-            "Space",
-            "f                     Temp",
-            "c                     delete collector",
-            "x                     confirm delete",
-            "e                     export",
-            "?  F1",
-            "q                     quit",
-            "Mouse",
-            "double-click",
-            "Right-click",
-            "Picker (rings, no PATH)",
-            "back to the picker",
+            "NAVIGATE",
+            "VIEWS",
+            "DELETE",
+            "PICKER",
+            "MOUSE",
+            "types DELETE",
             "--plain",
             "--no-tui",
             "--offline",
+            "--theme",
+            "solarized-dark",
+            "NO_COLOR",
             "GitHub Release",
             "RINGS_NO_UPDATE",
             "rings help",
         ] {
             assert!(text.contains(needle), "help missing {needle:?}:\n{text}");
         }
-        for line in KEY_LINES {
-            if line.is_empty() {
-                continue;
+        for group in KEY_GROUPS {
+            for (key, desc) in group.keys {
+                assert!(text.contains(key), "help missing key {key:?}");
+                assert!(text.contains(desc), "help missing {desc:?}");
             }
-            assert!(text.contains(line), "help missing key line {line:?}");
+        }
+    }
+
+    #[test]
+    fn key_table_fits_two_columns_on_eighty_cols() {
+        for group in KEY_GROUPS {
+            for (key, desc) in group.keys {
+                assert!(key.chars().count() <= 13, "{key:?} is too wide");
+                assert!(desc.chars().count() <= 22, "{desc:?} is too wide");
+            }
+            if let Some(note) = group.note {
+                assert!(note.chars().count() <= 37, "{note:?} is too wide");
+            }
         }
     }
 

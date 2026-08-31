@@ -13,6 +13,9 @@ mod win;
 pub use input::{decode, poll_event, Event, Key};
 pub use screen::{flush_diff, Buffer, Cell, Rect};
 
+mod color;
+pub use color::{color_depth, detect_color_depth, set_color_depth, ColorDepth};
+
 #[cfg(unix)]
 pub use unix::{terminal_size, Term};
 #[cfg(windows)]
@@ -24,10 +27,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
 
+/// Alt screen, hidden cursor, button + any-motion mouse reporting in SGR form.
 #[cfg(unix)]
-const ENTER_SEQ: &str = "\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h";
+const ENTER_SEQ: &str = "\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1003h\x1b[?1006h";
 #[cfg(unix)]
-const LEAVE_SEQ: &str = "\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l\x1b[0m";
+const LEAVE_SEQ: &str = "\x1b[?1006l\x1b[?1003l\x1b[?1000l\x1b[?25h\x1b[?1049l\x1b[0m";
 
 static RAW_ACTIVE: AtomicBool = AtomicBool::new(false);
 

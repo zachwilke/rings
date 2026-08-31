@@ -162,12 +162,28 @@ fn decode_records(recs: &[win32::InputRecord]) -> Vec<Event> {
             }
             t if t == win32::MOUSE_EVENT => {
                 let (x, y, buttons, flags) = win32::mouse_event(&rec.payload);
-                let settled = (flags & (win32::MOUSE_MOVED | win32::DOUBLE_CLICK)) == 0;
+                let col = x.max(0) as u16;
+                let row = (y as i32 - win_top as i32).max(0) as u16;
+                if flags & win32::MOUSE_WHEELED != 0 {
+                    // Wheel delta rides in the high word, positive = away from the user.
+                    let delta = (buttons >> 16) as i16;
+                    if delta != 0 {
+                        events.push(Event::Wheel {
+                            x: col,
+                            y: row,
+                            delta: if delta > 0 { -1 } else { 1 },
+                        });
+                    }
+                    continue;
+                }
+                if flags & win32::MOUSE_MOVED != 0 {
+                    events.push(Event::Move { x: col, y: row });
+                    continue;
+                }
+                let settled = (flags & win32::DOUBLE_CLICK) == 0;
                 let left = (buttons & win32::FROM_LEFT_1ST_BUTTON_PRESSED) != 0;
                 let right = (buttons & win32::RIGHTMOST_BUTTON_PRESSED) != 0;
                 if settled && (left || right) {
-                    let col = x.saturating_sub(0) as u16;
-                    let row = (y as i32 - win_top as i32).max(0) as u16;
                     events.push(if left {
                         Event::Click { x: col, y: row }
                     } else {

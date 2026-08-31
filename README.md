@@ -125,7 +125,11 @@ Press `?` or `F1` in the TUI for the full key list (the footer always hints `? h
 
 In the picker: `j` `k` move, `Enter` opens a directory, `h` goes up, `s` scans the highlighted one, `Esc` goes back to the scan you came from.
 
-Right-click any slice, row, or picker entry for a context menu — open, mark for delete, or delete that file or directory. Deleting from the menu marks the item and opens the same confirm modal as `x`; it never unlinks on the click.
+Hovering highlights rows, slices, and buttons; hovering a slice shows its path, size, and share of its parent in the footer. The scroll wheel moves the cursor. Right-click any slice, row, or picker entry for a context menu — open, mark for delete, or delete that file or directory. Deleting from the menu marks the item and opens the same confirm modal as `x`; it never unlinks on the click.
+
+## Themes and color
+
+`--theme nord` (also `gruvbox`, `dracula`, `solarized-dark`, `mono`; default `rings`). Color depth follows the terminal: 24-bit where `COLORTERM`, `TERM_PROGRAM`, or `WT_SESSION` say so, 256 colors for other xterm-alikes, 16 for the Linux console. `NO_COLOR` turns color off (bold and reverse video only); `RINGS_COLORS=16|256|truecolor` overrides detection.
 
 ## Delete, carefully
 

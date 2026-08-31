@@ -42,6 +42,17 @@ pub enum Action {
     BackToScan,
 }
 
+/// What the pointer is over. Drawn as a subtle highlight; never moves
+/// the selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hover {
+    Row(usize),
+    Slice(usize),
+    Button(Action),
+    Menu(usize),
+    Crumb(usize),
+}
+
 /// One entry in the right-click context menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuAction {
@@ -102,6 +113,7 @@ pub struct App {
     /// Set by the picker; the event loop spawns the walk for this path.
     pub pending_scan: Option<PathBuf>,
     pub menu: Option<Menu>,
+    pub hover: Option<Hover>,
 }
 
 impl App {
@@ -126,7 +138,41 @@ impl App {
             picker: None,
             pending_scan: None,
             menu: None,
+            hover: None,
         }
+    }
+
+    pub fn hovered_row(&self, i: usize) -> bool {
+        self.hover == Some(Hover::Row(i))
+    }
+
+    /// Footer tooltip for a hovered slice: path · size · share of its parent.
+    pub fn hover_line(&self) -> Option<String> {
+        let Some(Hover::Slice(id)) = self.hover else {
+            return None;
+        };
+        let tree = self.tree.as_ref()?;
+        let node = tree.get(id);
+        let size = node.display_size(self.apparent);
+        let share = node.parent.map(|p| {
+            let parent = tree.get(p);
+            let total = parent.display_size(self.apparent).max(1);
+            format!(
+                "  ·  {:.1}% of {}",
+                size as f64 * 100.0 / total as f64,
+                if parent.path.as_os_str() == Path::new("/").as_os_str() {
+                    "/".to_string()
+                } else {
+                    parent.name.clone()
+                }
+            )
+        });
+        Some(format!(
+            "{}  ·  {}{}",
+            node.path.display(),
+            human_bytes(size),
+            share.unwrap_or_default()
+        ))
     }
 
     /// Start in the directory picker instead of scanning straight away.

@@ -2,7 +2,7 @@ mod app;
 mod draw;
 mod picker;
 mod sunburst;
-mod theme;
+pub mod theme;
 
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -10,9 +10,8 @@ use std::sync::mpsc;
 use crate::scan::{scan_with_progress, WalkEvent, WalkOptions};
 use crate::term::{self, Buffer, Event, Key, Term};
 
-use self::app::{Action, App, View};
+use self::app::{Action, App, Hover, View};
 use self::draw::{row_index_at, HitMap};
-use self::theme::BG;
 
 const POLL_MS: i32 = 80;
 
@@ -26,6 +25,7 @@ pub fn run(path: Option<PathBuf>, opts: WalkOptions, apparent: bool) -> Result<(
         None => app.open_picker(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
     }
 
+    term::set_color_depth(term::detect_color_depth());
     let term = Term::enter().map_err(|e| format!("cannot enter raw mode: {e}"))?;
     let result = event_loop(&term, &mut app, opts);
     drop(term);
@@ -39,6 +39,7 @@ fn spawn_scan(path: PathBuf, opts: WalkOptions) -> mpsc::Receiver<WalkEvent> {
 }
 
 fn event_loop(term: &Term, app: &mut App, opts: WalkOptions) -> Result<(), String> {
+    let th = theme::current();
     let mut prev: Option<Buffer> = None;
     let mut hits = HitMap::empty();
     let mut dirty = true;
@@ -72,7 +73,7 @@ fn event_loop(term: &Term, app: &mut App, opts: WalkOptions) -> Result<(), Strin
             dirty = true;
         }
         if dirty {
-            let mut buf = Buffer::new(w, h, BG);
+            let mut buf = Buffer::new(w, h, th.bg);
             hits = draw::draw(&mut buf, app);
             term::flush_diff(&buf, prev.as_ref()).map_err(|e| e.to_string())?;
             prev = Some(buf);
@@ -84,12 +85,22 @@ fn event_loop(term: &Term, app: &mut App, opts: WalkOptions) -> Result<(), Strin
         }
 
         for ev in term::poll_event(POLL_MS) {
-            dirty = true;
             match ev {
+                Event::Move { x, y } => {
+                    // Motion floods; only repaint when the hovered thing changes.
+                    let hover = hover_at(app, &hits, x, y);
+                    if hover != app.hover {
+                        app.hover = hover;
+                        dirty = true;
+                    }
+                    continue;
+                }
                 Event::Key(key) => handle_key(app, key),
                 Event::Click { x, y } => handle_click(app, &hits, x, y),
                 Event::RightClick { x, y } => handle_right_click(app, &hits, x, y),
+                Event::Wheel { delta, .. } => handle_wheel(app, delta),
             }
+            dirty = true;
             if app.quit {
                 return Ok(());
             }
@@ -144,6 +155,8 @@ fn handle_key(app: &mut App, key: Key) {
         Key::Char('k') | Key::Up => app.move_sel(-1),
         Key::PageDown => app.move_sel(10),
         Key::PageUp => app.move_sel(-10),
+        Key::Char('g') => app.move_sel(isize::MIN / 2),
+        Key::Char('G') => app.move_sel(isize::MAX / 2),
         Key::Enter => app.drill(),
         Key::Backspace | Key::Left | Key::Char('h') => go_back(app),
         Key::Char(' ') | Key::Char('d') => app.toggle_mark_selected(),
@@ -194,6 +207,57 @@ fn go_back(app: &mut App) {
         View::Browse => app.go_up_browse(),
         _ => app.go_up(),
     }
+}
+
+/// Wheel moves the cursor of whatever list is in view, like j/k.
+fn handle_wheel(app: &mut App, delta: i8) {
+    let delta = delta as isize;
+    if app.menu.is_some() {
+        app.menu_move(delta);
+        return;
+    }
+    match app.view {
+        View::Picker => app.picker_move(delta),
+        View::Browse | View::Findings | View::Collector => app.move_sel(delta),
+        _ => {}
+    }
+}
+
+/// What is under the pointer, without touching the selection.
+fn hover_at(app: &App, hits: &HitMap, x: u16, y: u16) -> Option<Hover> {
+    if app.menu.is_some() {
+        return hits
+            .menu
+            .iter()
+            .find(|(r, _)| r.contains(x, y))
+            .map(|(_, i)| Hover::Menu(*i));
+    }
+    if let Some((_, a)) = hits.buttons.iter().find(|(r, _)| r.contains(x, y)) {
+        return Some(Hover::Button(*a));
+    }
+    if let Some((_, n)) = hits.crumbs.iter().find(|(r, _)| r.contains(x, y)) {
+        return Some(Hover::Crumb(*n));
+    }
+    let list_len = match app.view {
+        View::Picker => app.picker.as_ref()?.entries.len(),
+        View::Browse | View::Confirm { .. } => {
+            if let Some(slice) = sunburst::hit_slice(&hits.slices, hits.sunburst, x, y) {
+                return Some(Hover::Slice(slice.node));
+            }
+            app.current_children().len()
+        }
+        View::Findings => app.finding_ids().len(),
+        View::Collector => app.collector.len(),
+        _ => return None,
+    };
+    if !hits.list.contains(x, y) {
+        return None;
+    }
+    let offset = match app.view {
+        View::Picker => app.picker.as_ref()?.offset,
+        _ => app.list_offset,
+    };
+    row_index_at(hits.list, y, offset, list_len).map(Hover::Row)
 }
 
 /// Right-click selects what is under the cursor, then opens the menu there.
@@ -338,6 +402,7 @@ mod tests {
 
     #[test]
     fn browse_view_shows_sunburst_and_child_list() {
+        let th = theme::current();
         let tmp = tempfile::TempDir::new().unwrap();
         fs::write(tmp.path().join("big.dat"), vec![b'x'; 8192]).unwrap();
         fs::create_dir(tmp.path().join("subdir")).unwrap();
@@ -348,7 +413,7 @@ mod tests {
         app.tree = Some(tree);
         app.view = View::Browse;
 
-        let mut buf = Buffer::new(100, 28, BG);
+        let mut buf = Buffer::new(100, 28, th.bg);
         let hits = draw::draw(&mut buf, &app);
         let screen = buf.text();
 
@@ -376,6 +441,7 @@ mod tests {
 
     #[test]
     fn click_selects_list_row_and_button_quits() {
+        let th = theme::current();
         let tmp = tempfile::TempDir::new().unwrap();
         for i in 0..4 {
             fs::write(
@@ -389,7 +455,7 @@ mod tests {
         app.tree = Some(tree);
         app.view = View::Browse;
 
-        let mut buf = Buffer::new(100, 28, BG);
+        let mut buf = Buffer::new(100, 28, th.bg);
         let hits = draw::draw(&mut buf, &app);
 
         // Click the second list row.
@@ -415,6 +481,7 @@ mod tests {
 
     #[test]
     fn footer_chips_have_gaps_and_skip_hit_count() {
+        let th = theme::current();
         let tmp = tempfile::TempDir::new().unwrap();
         write_nested_fixture(tmp.path());
         let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
@@ -422,7 +489,7 @@ mod tests {
         app.tree = Some(tree);
         app.open_findings();
 
-        let mut buf = Buffer::new(100, 28, BG);
+        let mut buf = Buffer::new(100, 28, th.bg);
         let hits = draw::draw(&mut buf, &app);
         let screen = buf.text();
 
@@ -472,6 +539,7 @@ mod tests {
 
     #[test]
     fn narrow_footer_drops_export_before_quit() {
+        let th = theme::current();
         let tmp = tempfile::TempDir::new().unwrap();
         write_nested_fixture(tmp.path());
         let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
@@ -479,7 +547,7 @@ mod tests {
         app.tree = Some(tree);
         app.view = View::Browse;
 
-        let mut buf = Buffer::new(48, 20, BG);
+        let mut buf = Buffer::new(48, 20, th.bg);
         let hits = draw::draw(&mut buf, &app);
         let actions: Vec<Action> = hits.buttons.iter().map(|(_, a)| *a).collect();
         assert!(
@@ -498,30 +566,43 @@ mod tests {
 
     #[test]
     fn help_overlay_lists_every_binding_and_the_logo() {
+        let th = theme::current();
         let mut app = App::new(std::path::PathBuf::from("."), false);
         app.view = View::Help;
-        let mut buf = Buffer::new(80, 24, BG);
+
+        // Roomy: logo plus every group in two columns.
+        let mut buf = Buffer::new(100, 34, th.bg);
         draw::draw(&mut buf, &app);
         let screen = buf.text();
-
         assert!(screen.contains('◎'), "shared logo center:\n{screen}");
-        assert!(screen.contains('╭'), "nested rings:\n{screen}");
-        for needle in [
-            "move selection",
-            "drill into",
-            "go up",
-            "mark or unmark",
-            "Temp & cache",
-            "delete collector",
-            "confirm delete",
-            "export current view",
-            "?  F1",
-            "quit",
-            "Mouse",
-            "double-click",
-        ] {
-            assert!(screen.contains(needle), "help missing {needle}:\n{screen}");
+        assert!(screen.contains('╭'), "rounded chrome:\n{screen}");
+        for group in crate::cli::KEY_GROUPS {
+            assert!(
+                screen.contains(group.title),
+                "missing {}:\n{screen}",
+                group.title
+            );
+            for (key, desc) in group.keys {
+                assert!(screen.contains(desc), "missing {desc:?}:\n{screen}");
+                assert!(screen.contains(key), "missing {key:?}:\n{screen}");
+            }
         }
+        assert!(screen.contains("Close"), "close chip:\n{screen}");
+
+        // 80×24 over SSH: the logo yields so every binding still fits.
+        let mut buf = Buffer::new(80, 24, th.bg);
+        let hits = draw::draw(&mut buf, &app);
+        let screen = buf.text();
+        assert!(
+            !screen.contains('◎'),
+            "logo gives way when short:\n{screen}"
+        );
+        for group in crate::cli::KEY_GROUPS {
+            for (_, desc) in group.keys {
+                assert!(screen.contains(desc), "80x24 missing {desc:?}:\n{screen}");
+            }
+        }
+        assert!(hits.buttons.iter().any(|(_, a)| *a == Action::Back));
     }
 
     #[test]
@@ -540,6 +621,7 @@ mod tests {
 
     #[test]
     fn picker_lists_entries_and_offers_a_scan_chip() {
+        let th = theme::current();
         let tmp = tempfile::TempDir::new().unwrap();
         fs::create_dir(tmp.path().join("projects")).unwrap();
         fs::write(tmp.path().join("notes.txt"), b"hi").unwrap();
@@ -548,7 +630,7 @@ mod tests {
         app.open_picker(tmp.path());
         assert_eq!(app.view, View::Picker);
 
-        let mut buf = Buffer::new(90, 24, BG);
+        let mut buf = Buffer::new(90, 24, th.bg);
         let hits = draw::draw(&mut buf, &app);
         let screen = buf.text();
 
@@ -605,13 +687,14 @@ mod tests {
 
     #[test]
     fn clicking_a_picker_row_selects_and_double_click_opens() {
+        let th = theme::current();
         let tmp = tempfile::TempDir::new().unwrap();
         fs::create_dir_all(tmp.path().join("alpha").join("inner")).unwrap();
         fs::create_dir(tmp.path().join("beta")).unwrap();
 
         let mut app = App::new(tmp.path().to_path_buf(), false);
         app.open_picker(tmp.path());
-        let mut buf = Buffer::new(90, 24, BG);
+        let mut buf = Buffer::new(90, 24, th.bg);
         let hits = draw::draw(&mut buf, &app);
 
         handle_click(&mut app, &hits, hits.list.x + 2, hits.list.y + 1);
@@ -627,6 +710,7 @@ mod tests {
 
     #[test]
     fn help_from_the_picker_returns_to_the_picker() {
+        let th = theme::current();
         let tmp = tempfile::TempDir::new().unwrap();
         let mut app = App::new(tmp.path().to_path_buf(), false);
         app.open_picker(tmp.path());
@@ -638,7 +722,7 @@ mod tests {
 
         // A click anywhere closes the overlay too.
         handle_key(&mut app, Key::F1);
-        let mut buf = Buffer::new(80, 24, BG);
+        let mut buf = Buffer::new(80, 24, th.bg);
         let hits = draw::draw(&mut buf, &app);
         assert!(
             hits.buttons.iter().any(|(_, a)| *a == Action::Back),
@@ -650,6 +734,7 @@ mod tests {
 
     #[test]
     fn right_click_opens_a_context_menu_that_marks_and_deletes() {
+        let th = theme::current();
         let tmp = tempfile::TempDir::new().unwrap();
         write_nested_fixture(tmp.path());
         let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
@@ -657,7 +742,7 @@ mod tests {
         app.tree = Some(tree);
         app.view = View::Browse;
 
-        let mut buf = Buffer::new(100, 28, BG);
+        let mut buf = Buffer::new(100, 28, th.bg);
         let hits = draw::draw(&mut buf, &app);
         let row_y = hits.list.y + 1;
         handle_right_click(&mut app, &hits, hits.list.x + 3, row_y);
@@ -675,7 +760,7 @@ mod tests {
         assert_eq!(app.selected, 1, "right-click selects the row it opened on");
 
         // The menu paints over the view and its rows are clickable.
-        let mut buf = Buffer::new(100, 28, BG);
+        let mut buf = Buffer::new(100, 28, th.bg);
         let hits = draw::draw(&mut buf, &app);
         assert!(!hits.menu.is_empty(), "menu rows are hit-tested");
         let screen = buf.text();
@@ -704,6 +789,7 @@ mod tests {
 
     #[test]
     fn context_menu_delete_marks_then_asks_to_confirm() {
+        let th = theme::current();
         let tmp = tempfile::TempDir::new().unwrap();
         write_nested_fixture(tmp.path());
         let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
@@ -711,7 +797,7 @@ mod tests {
         app.tree = Some(tree);
         app.view = View::Browse;
 
-        let mut buf = Buffer::new(100, 28, BG);
+        let mut buf = Buffer::new(100, 28, th.bg);
         let hits = draw::draw(&mut buf, &app);
         handle_right_click(&mut app, &hits, hits.list.x + 3, hits.list.y);
         let path = app.selected_path().expect("a selected path");
@@ -743,6 +829,7 @@ mod tests {
 
     #[test]
     fn escape_closes_the_context_menu_without_acting() {
+        let th = theme::current();
         let tmp = tempfile::TempDir::new().unwrap();
         write_nested_fixture(tmp.path());
         let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
@@ -750,7 +837,7 @@ mod tests {
         app.tree = Some(tree);
         app.view = View::Browse;
 
-        let mut buf = Buffer::new(100, 28, BG);
+        let mut buf = Buffer::new(100, 28, th.bg);
         let hits = draw::draw(&mut buf, &app);
         handle_right_click(&mut app, &hits, hits.list.x + 3, hits.list.y);
         assert!(app.menu.is_some());
@@ -762,12 +849,13 @@ mod tests {
 
     #[test]
     fn right_click_in_the_picker_offers_scan_and_open() {
+        let th = theme::current();
         let tmp = tempfile::TempDir::new().unwrap();
         fs::create_dir(tmp.path().join("data")).unwrap();
         let mut app = App::new(tmp.path().to_path_buf(), false);
         app.open_picker(tmp.path());
 
-        let mut buf = Buffer::new(90, 24, BG);
+        let mut buf = Buffer::new(90, 24, th.bg);
         let hits = draw::draw(&mut buf, &app);
         handle_right_click(&mut app, &hits, hits.list.x + 2, hits.list.y);
 
@@ -815,6 +903,7 @@ mod tests {
 
     #[test]
     fn picker_from_a_scan_offers_back_to_scan_and_can_rescan() {
+        let th = theme::current();
         let tmp = tempfile::TempDir::new().unwrap();
         write_nested_fixture(tmp.path());
         let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
@@ -823,7 +912,7 @@ mod tests {
         app.view = View::Browse;
         handle_key(&mut app, Key::Char('-'));
 
-        let mut buf = Buffer::new(100, 28, BG);
+        let mut buf = Buffer::new(100, 28, th.bg);
         let hits = draw::draw(&mut buf, &app);
         let back = hits
             .buttons
@@ -847,6 +936,7 @@ mod tests {
 
     #[test]
     fn browse_footer_keeps_the_picker_chip_and_the_help_hint() {
+        let th = theme::current();
         let tmp = tempfile::TempDir::new().unwrap();
         write_nested_fixture(tmp.path());
         let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
@@ -854,7 +944,7 @@ mod tests {
         app.tree = Some(tree);
         app.view = View::Browse;
 
-        let mut buf = Buffer::new(100, 28, BG);
+        let mut buf = Buffer::new(100, 28, th.bg);
         let hits = draw::draw(&mut buf, &app);
         assert!(
             hits.buttons.iter().any(|(_, a)| *a == Action::Picker),
@@ -865,6 +955,135 @@ mod tests {
             "the standing hint survives the extra chip:\n{}",
             buf.text()
         );
+    }
+
+    #[test]
+    fn wheel_moves_the_cursor_like_j_and_k() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        for d in ["a", "b", "c"] {
+            fs::create_dir(tmp.path().join(d)).unwrap();
+        }
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.open_picker(tmp.path());
+        handle_wheel(&mut app, 1);
+        handle_wheel(&mut app, 1);
+        assert_eq!(app.picker.as_ref().unwrap().selected, 2);
+        handle_wheel(&mut app, -1);
+        assert_eq!(app.picker.as_ref().unwrap().selected, 1);
+
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        app.tree = Some(tree);
+        app.view = View::Browse;
+        handle_wheel(&mut app, 1);
+        assert_eq!(app.selected, 1, "browse list scrolls too");
+    }
+
+    #[test]
+    fn hover_highlights_a_row_without_selecting_it() {
+        let th = theme::current();
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.tree = Some(tree);
+        app.view = View::Browse;
+
+        let mut buf = Buffer::new(100, 28, th.bg);
+        let hits = draw::draw(&mut buf, &app);
+        let (hx, hy) = (hits.list.x + 3, hits.list.y + 2);
+        let hover = hover_at(&app, &hits, hx, hy);
+        assert_eq!(hover, Some(Hover::Row(2)));
+        app.hover = hover;
+        assert_eq!(app.selected, 0, "hover never moves the selection");
+
+        let mut buf = Buffer::new(100, 28, th.bg);
+        draw::draw(&mut buf, &app);
+        assert_eq!(buf.get(hx, hy).unwrap().bg, th.hover_bg, "hovered row tint");
+        assert_eq!(
+            buf.get(hx, hits.list.y).unwrap().bg,
+            th.select_bg,
+            "selected row keeps its own color"
+        );
+
+        // Outside every hit target there is nothing to hover.
+        assert_eq!(hover_at(&app, &hits, 0, hits.list.y + 20), None);
+    }
+
+    #[test]
+    fn hover_over_a_slice_puts_a_tooltip_in_the_footer() {
+        let th = theme::current();
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.tree = Some(tree);
+        app.view = View::Browse;
+
+        let mut buf = Buffer::new(100, 28, th.bg);
+        let hits = draw::draw(&mut buf, &app);
+        let slice = hits.slices.iter().find(|s| !s.grouped).expect("a slice");
+        // Hover the slice via the hit map rather than guessing a pixel.
+        app.hover = Some(Hover::Slice(slice.node));
+        let tip = app.hover_line().expect("tooltip");
+        assert!(tip.contains("% of"), "{tip}");
+        let mut buf = Buffer::new(100, 28, th.bg);
+        draw::draw(&mut buf, &app);
+        assert!(
+            buf.text().contains("% of"),
+            "footer shows the tooltip:\n{}",
+            buf.text()
+        );
+    }
+
+    #[test]
+    fn chips_and_menu_rows_react_to_hover() {
+        let th = theme::current();
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.tree = Some(tree);
+        app.view = View::Browse;
+
+        let mut buf = Buffer::new(100, 28, th.bg);
+        let hits = draw::draw(&mut buf, &app);
+        let quit = hits
+            .buttons
+            .iter()
+            .find(|(_, a)| *a == Action::Quit)
+            .unwrap()
+            .0;
+        app.hover = hover_at(&app, &hits, quit.x + 1, quit.y);
+        assert_eq!(app.hover, Some(Hover::Button(Action::Quit)));
+        let mut buf = Buffer::new(100, 28, th.bg);
+        draw::draw(&mut buf, &app);
+        assert_eq!(buf.get(quit.x + 1, quit.y).unwrap().bg, th.select_bg);
+
+        handle_right_click(&mut app, &hits, hits.list.x + 3, hits.list.y);
+        let mut buf = Buffer::new(100, 28, th.bg);
+        let hits = draw::draw(&mut buf, &app);
+        let row = hits.menu[1].0;
+        app.hover = hover_at(&app, &hits, row.x + 1, row.y);
+        assert_eq!(app.hover, Some(Hover::Menu(1)));
+    }
+
+    #[test]
+    fn every_theme_renders_the_browse_view() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        for name in theme::names() {
+            theme::set(name).unwrap();
+            let th = theme::current();
+            let mut app = App::new(tmp.path().to_path_buf(), false);
+            app.tree = Some(tree.clone());
+            app.view = View::Browse;
+            let mut buf = Buffer::new(100, 28, th.bg);
+            let hits = draw::draw(&mut buf, &app);
+            assert!(!hits.slices.is_empty(), "{name}: slices");
+            assert!(buf.text().contains("usr"), "{name}: list");
+        }
+        theme::set("rings").unwrap();
     }
 
     fn write_nested_fixture(root: &std::path::Path) {
@@ -913,6 +1132,7 @@ mod tests {
     }
 
     fn write_ppm(buf: &Buffer, path: &std::path::Path, scale: u32) {
+        let th = theme::current();
         const COLS: u32 = 2;
         const ROWS: u32 = 4;
         let w = buf.width as u32 * COLS * scale;
@@ -923,7 +1143,7 @@ mod tests {
                 let cell = buf
                     .get(x, y)
                     .cloned()
-                    .unwrap_or(crate::term::Cell::blank(BG));
+                    .unwrap_or(crate::term::Cell::blank(th.bg));
                 let dots = sunburst::raster_cell(cell);
                 for row in 0..ROWS as usize {
                     for col in 0..COLS as usize {
@@ -949,7 +1169,8 @@ mod tests {
     }
 
     fn dump_view_ppm(app: &App, stem: &str) -> (String, String) {
-        let mut buf = Buffer::new(100, 28, BG);
+        let th = theme::current();
+        let mut buf = Buffer::new(100, 28, th.bg);
         let hits = draw::draw(&mut buf, app);
         let dir = std::env::temp_dir();
         let ppm = dir.join(format!("rings-{stem}-current.ppm"));
@@ -968,6 +1189,7 @@ mod tests {
 
     #[test]
     fn dump_browse_view_ppm() {
+        let th = theme::current();
         let tmp = tempfile::TempDir::new().unwrap();
         write_nested_fixture(tmp.path());
         let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
@@ -978,7 +1200,7 @@ mod tests {
         dump_view_ppm(&app, "browse");
         app.open_findings();
         dump_view_ppm(&app, "findings");
-        let mut wide = Buffer::new(140, 28, BG);
+        let mut wide = Buffer::new(140, 28, th.bg);
         draw::draw(&mut wide, &app);
         let wide_ppm = std::env::temp_dir().join("rings-findings-wide-current.ppm");
         write_ppm(&wide, &wide_ppm, 3);
@@ -993,9 +1215,10 @@ mod tests {
 
     #[test]
     fn first_paint_shows_the_shared_logo() {
+        let th = theme::current();
         let mut app = App::new(std::path::PathBuf::from("/var"), false);
         app.view = View::Scanning;
-        let mut buf = Buffer::new(80, 24, BG);
+        let mut buf = Buffer::new(80, 24, th.bg);
         draw::draw(&mut buf, &app);
         let screen = buf.text();
         assert!(

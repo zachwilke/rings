@@ -1,15 +1,12 @@
-use crate::cli::KEY_LINES;
+use crate::cli::{key_column_width, KEY_GROUPS};
 use crate::constants::{CHIP_GAP, DELETE_CONFIRM_PHRASE, FOOTER_H};
 use crate::delete::needs_typed_confirm;
 use crate::logo;
 use crate::size::{group_u64, human_bytes};
 use crate::term::{Buffer, Cell, Rect, Rgb};
-use crate::tui::app::{Action, App, Menu, MenuAction, View};
+use crate::tui::app::{Action, App, Hover, Menu, MenuAction, View};
 use crate::tui::sunburst::{self, Slice};
-use crate::tui::theme::{
-    self, category_color, ACCENT, BG, CHIP, DANGER, MUTED, PALETTE, PANEL, SELECT_BG, SMALLER,
-    TEXT, WARN,
-};
+use crate::tui::theme::{self, category_color};
 
 pub struct HitMap {
     pub sunburst: Rect,
@@ -35,7 +32,8 @@ impl HitMap {
 }
 
 pub fn draw(buf: &mut Buffer, app: &App) -> HitMap {
-    buf.fill(buf.area(), BG);
+    let th = theme::current();
+    buf.fill(buf.area(), th.bg);
     let mut hits = match app.view {
         View::Picker => draw_picker(buf, app),
         View::Scanning => {
@@ -51,13 +49,14 @@ pub fn draw(buf: &mut Buffer, app: &App) -> HitMap {
         _ => draw_main(buf, app),
     };
     if let Some(menu) = app.menu.as_ref() {
-        draw_menu(buf, menu, &mut hits);
+        draw_menu(buf, menu, app.hover, &mut hits);
     }
     hits
 }
 
 /// Right-click menu, anchored at the cursor and clamped to the screen.
-fn draw_menu(buf: &mut Buffer, menu: &Menu, hits: &mut HitMap) {
+fn draw_menu(buf: &mut Buffer, menu: &Menu, hover: Option<Hover>, hits: &mut HitMap) {
+    let th = theme::current();
     let w = menu.width().min(buf.width);
     let h = menu.height().min(buf.height);
     if w < 4 || h < 3 {
@@ -69,9 +68,9 @@ fn draw_menu(buf: &mut Buffer, menu: &Menu, hits: &mut HitMap) {
         width: w,
         height: h,
     };
-    buf.fill(rect, BG);
+    buf.fill(rect, th.bg);
     let title = truncate(&menu.title, rect.width.saturating_sub(4) as usize);
-    let inner = draw_box(buf, rect, &format!(" {title} "), MUTED, ACCENT);
+    let inner = draw_box(buf, rect, &format!(" {title} "), th.muted, th.accent);
 
     for (i, (action, label)) in menu.items.iter().enumerate() {
         let y = inner.y + i as u16;
@@ -79,7 +78,7 @@ fn draw_menu(buf: &mut Buffer, menu: &Menu, hits: &mut HitMap) {
             break;
         }
         let sel = i == menu.selected;
-        let row_bg = if sel { SELECT_BG } else { BG };
+        let row_bg = row_background(th, sel, hover == Some(Hover::Menu(i)));
         buf.fill(
             Rect {
                 x: inner.x,
@@ -90,9 +89,9 @@ fn draw_menu(buf: &mut Buffer, menu: &Menu, hits: &mut HitMap) {
             row_bg,
         );
         let fg = match action {
-            MenuAction::Delete => DANGER,
-            MenuAction::Cancel => MUTED,
-            _ => TEXT,
+            MenuAction::Delete => th.danger,
+            MenuAction::Cancel => th.muted,
+            _ => th.text,
         };
         let text = truncate(label, inner.width.saturating_sub(2) as usize);
         buf.print_styled(inner.x + 1, y, &text, fg, row_bg, sel);
@@ -111,8 +110,9 @@ fn draw_menu(buf: &mut Buffer, menu: &Menu, hits: &mut HitMap) {
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 fn draw_scan(buf: &mut Buffer, app: &App) {
-    let x = buf.print_styled(1, 0, "◎ rings ", TEXT, BG, true);
-    buf.print(x, 0, "scanning", MUTED, BG);
+    let th = theme::current();
+    let x = buf.print_styled(1, 0, "◎ rings ", th.text, th.bg, true);
+    buf.print(x, 0, "scanning", th.muted, th.bg);
 
     let (files, dirs, errors, current) = match &app.progress {
         Some(p) => (p.files, p.dirs, p.errors, p.current.display().to_string()),
@@ -132,13 +132,13 @@ fn draw_scan(buf: &mut Buffer, app: &App) {
         .width
         .saturating_sub(path_line.chars().count() as u16 + 2))
         / 2;
-    let x = buf.print(px, cy, spinner, ACCENT, BG);
+    let x = buf.print(px, cy, spinner, th.accent, th.bg);
     buf.print(
         x + 1,
         cy,
         &truncate(&path_line, buf.width.saturating_sub(4) as usize),
-        ACCENT,
-        BG,
+        th.accent,
+        th.bg,
     );
 
     let counts = format!(
@@ -148,11 +148,11 @@ fn draw_scan(buf: &mut Buffer, app: &App) {
         group_u64(errors)
     );
     let cx = (buf.width.saturating_sub(counts.chars().count() as u16)) / 2;
-    buf.print_styled(cx, cy.saturating_add(2), &counts, TEXT, BG, true);
+    buf.print_styled(cx, cy.saturating_add(2), &counts, th.text, th.bg, true);
 
     let shown = truncate(&current, buf.width.saturating_sub(6) as usize);
     let sx = (buf.width.saturating_sub(shown.chars().count() as u16)) / 2;
-    buf.print(sx, cy.saturating_add(3), &shown, MUTED, BG);
+    buf.print(sx, cy.saturating_add(3), &shown, th.muted, th.bg);
 
     let hint = if app.is_root {
         crate::sys::scan_banner_privileged()
@@ -161,10 +161,11 @@ fn draw_scan(buf: &mut Buffer, app: &App) {
     };
     let y = buf.height.saturating_sub(2);
     let hx = (buf.width.saturating_sub(hint.chars().count() as u16)) / 2;
-    buf.print(hx, y, hint, MUTED, BG);
+    buf.print(hx, y, hint, th.muted, th.bg);
 }
 
 fn draw_picker(buf: &mut Buffer, app: &App) -> HitMap {
+    let th = theme::current();
     let footer_h = FOOTER_H.min(buf.height);
     let body = Rect {
         x: 0,
@@ -179,7 +180,7 @@ fn draw_picker(buf: &mut Buffer, app: &App) -> HitMap {
         height: footer_h,
     };
 
-    let x = buf.print_styled(1, 0, "◎ rings ", TEXT, BG, true);
+    let x = buf.print_styled(1, 0, "◎ rings ", th.text, th.bg, true);
     let dir = app
         .picker
         .as_ref()
@@ -189,11 +190,11 @@ fn draw_picker(buf: &mut Buffer, app: &App) -> HitMap {
         x,
         0,
         &truncate(&dir, buf.width.saturating_sub(x + 1) as usize),
-        ACCENT,
-        BG,
+        th.accent,
+        th.bg,
     );
 
-    let inner = draw_box(buf, body, " Pick a directory to scan ", ACCENT, MUTED);
+    let inner = draw_box(buf, body, " Pick a directory to scan ", th.accent, th.muted);
     let mut hits = HitMap::empty();
     hits.list = inner;
     hits.buttons = draw_footer(buf, app, footer);
@@ -206,8 +207,8 @@ fn draw_picker(buf: &mut Buffer, app: &App) -> HitMap {
             inner.x + 1,
             inner.y,
             "empty — press s to scan this directory, h to go up",
-            MUTED,
-            BG,
+            th.muted,
+            th.bg,
         );
         return hits;
     }
@@ -224,8 +225,8 @@ fn draw_picker(buf: &mut Buffer, app: &App) -> HitMap {
     {
         let y = inner.y + row as u16;
         let sel = i == picker.selected;
-        let row_bg = if sel { SELECT_BG } else { BG };
-        if sel {
+        let row_bg = row_background(th, sel, app.hovered_row(i));
+        if row_bg != th.bg {
             buf.fill(
                 Rect {
                     x: inner.x,
@@ -237,9 +238,9 @@ fn draw_picker(buf: &mut Buffer, app: &App) -> HitMap {
             );
         }
         let (glyph, color) = if entry.is_dir {
-            ("▸", ACCENT)
+            ("▸", th.accent)
         } else {
-            ("·", SMALLER)
+            ("·", th.smaller)
         };
         let name = if entry.is_dir {
             format!("{}/", entry.name)
@@ -250,7 +251,7 @@ fn draw_picker(buf: &mut Buffer, app: &App) -> HitMap {
         x = buf.print(x, y, glyph, color, row_bg);
         x = buf.print(x, y, " ", color, row_bg);
         let name_w = inner.right().saturating_sub(x + 1) as usize;
-        let fg = if entry.is_dir { TEXT } else { MUTED };
+        let fg = if entry.is_dir { th.text } else { th.muted };
         buf.print_styled(x, y, &truncate(&name, name_w), fg, row_bg, sel);
     }
     hits
@@ -298,15 +299,17 @@ fn draw_main(buf: &mut Buffer, app: &App) -> HitMap {
 }
 
 fn draw_header(buf: &mut Buffer, app: &App, area: Rect) -> Vec<(Rect, usize)> {
+    let th = theme::current();
     let mut crumbs = Vec::new();
-    let mut x = buf.print_styled(area.x + 1, area.y, "◎ rings ", TEXT, BG, true);
+    let mut x = buf.print_styled(area.x + 1, area.y, "◎ rings ", th.text, th.bg, true);
     for (i, (label, nid)) in app.breadcrumb().iter().enumerate() {
         if i > 0 {
-            x = buf.print(x, area.y, " › ", MUTED, BG);
+            x = buf.print(x, area.y, " › ", th.muted, th.bg);
         }
         let shown = truncate(label, 24);
         let w = shown.chars().count() as u16;
-        let end = buf.print(x, area.y, &shown, ACCENT, BG);
+        let hovered = app.hover == Some(Hover::Crumb(*nid));
+        let end = buf.print_styled(x, area.y, &shown, th.accent, th.bg, hovered);
         crumbs.push((
             Rect {
                 x,
@@ -325,6 +328,7 @@ fn draw_header(buf: &mut Buffer, app: &App, area: Rect) -> Vec<(Rect, usize)> {
 }
 
 fn draw_browse(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
+    let th = theme::current();
     let left_w = (area.width as u32 * 58 / 100) as u16;
     let left = Rect {
         x: area.x,
@@ -352,7 +356,12 @@ fn draw_browse(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
     let current = tree.node_at(&app.cwd);
     let selected = app.selected_id();
     let rings = sunburst::rings_for(left);
-    let slices = sunburst::build_slices(tree, current, app.apparent, selected, rings);
+    let mut slices = sunburst::build_slices(tree, current, app.apparent, selected, rings);
+    if let Some(Hover::Slice(node)) = app.hover {
+        for s in slices.iter_mut().filter(|s| s.node == node && !s.grouped) {
+            s.color = theme::brighten(s.color);
+        }
+    }
     sunburst::render(buf, left, &slices);
     hits.slices = slices;
 
@@ -363,25 +372,26 @@ fn draw_browse(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
     if left.height > 4 {
         let cy = left.y + left.height / 2;
         let lx = left.x + (left.width.saturating_sub(label.chars().count() as u16)) / 2;
-        buf.print(lx, cy.saturating_sub(1), &label, ACCENT, BG);
+        buf.print(lx, cy.saturating_sub(1), &label, th.accent, th.bg);
         let nx = left.x + (left.width.saturating_sub(name.chars().count() as u16)) / 2;
-        buf.print(nx, cy, &name, MUTED, BG);
+        buf.print(nx, cy, &name, th.muted, th.bg);
     }
 
     for y in right.y..right.bottom() {
-        buf.print(right.x, y, "│", MUTED, BG);
+        buf.print(right.x, y, "│", th.muted, th.bg);
     }
     draw_child_list(buf, app, hits.list);
 }
 
 fn draw_child_list(buf: &mut Buffer, app: &App, area: Rect) {
+    let th = theme::current();
     let Some(tree) = app.tree() else {
         return;
     };
     let current = tree.node_at(&app.cwd);
     let kids = &tree.get(current).children;
     if kids.is_empty() {
-        buf.print(area.x + 1, area.y, "empty", MUTED, BG);
+        buf.print(area.x + 1, area.y, "empty", th.muted, th.bg);
         return;
     }
     let h = area.height as usize;
@@ -390,8 +400,8 @@ fn draw_child_list(buf: &mut Buffer, app: &App, area: Rect) {
         let y = area.y + row as u16;
         let n = tree.get(cid);
         let sel = i == app.selected;
-        let row_bg = if sel { SELECT_BG } else { BG };
-        if sel {
+        let row_bg = row_background(th, sel, app.hovered_row(i));
+        if row_bg != th.bg {
             buf.fill(
                 Rect {
                     x: area.x,
@@ -405,7 +415,7 @@ fn draw_child_list(buf: &mut Buffer, app: &App, area: Rect) {
         let color = if n.category.is_waste() {
             category_color(n.category)
         } else {
-            theme::PALETTE[i % theme::PALETTE.len()]
+            th.palette[i % th.palette.len()]
         };
         let dot = if app.collector.contains_path(&n.path) {
             "●"
@@ -419,13 +429,14 @@ fn draw_child_list(buf: &mut Buffer, app: &App, area: Rect) {
         let mut x = buf.print(area.x, y, " ", color, row_bg);
         x = buf.print(x, y, dot, color, row_bg);
         x = buf.print(x, y, " ", color, row_bg);
-        buf.print_styled(x, y, &name, TEXT, row_bg, sel);
+        buf.print_styled(x, y, &name, th.text, row_bg, sel);
         let sx = area.right().saturating_sub(size_w);
-        buf.print(sx, y, &size, if sel { TEXT } else { MUTED }, row_bg);
+        buf.print(sx, y, &size, if sel { th.text } else { th.muted }, row_bg);
     }
 }
 
 fn draw_findings(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
+    let th = theme::current();
     let Some(tree) = app.tree() else {
         return;
     };
@@ -434,7 +445,7 @@ fn draw_findings(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
         " Temp & cache · {} hits (inspect, then mark — never auto-deleted) ",
         ids.len()
     );
-    let inner = draw_box(buf, area, &title, ACCENT, MUTED);
+    let inner = draw_box(buf, area, &title, th.accent, th.muted);
     hits.list = inner;
 
     if ids.is_empty() {
@@ -442,8 +453,8 @@ fn draw_findings(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
             inner.x,
             inner.y,
             "No temp, cache, log, journal, or crash paths in this scan.",
-            MUTED,
-            BG,
+            th.muted,
+            th.bg,
         );
         return;
     }
@@ -454,8 +465,8 @@ fn draw_findings(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
         let y = inner.y + row as u16;
         let n = tree.get(id);
         let sel = i == app.findings_selected;
-        let row_bg = if sel { SELECT_BG } else { BG };
-        if sel {
+        let row_bg = row_background(th, sel, app.hovered_row(i));
+        if row_bg != th.bg {
             buf.fill(
                 Rect {
                     x: inner.x,
@@ -478,24 +489,25 @@ fn draw_findings(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
         x = buf.print(x, y, &format!("{:<8}", n.category.label()), color, row_bg);
         let path_w = inner.width.saturating_sub(x - inner.x + size_w + 1) as usize;
         let path = truncate(&n.path.to_string_lossy(), path_w);
-        buf.print_styled(x, y, &path, TEXT, row_bg, sel);
+        buf.print_styled(x, y, &path, th.text, row_bg, sel);
         buf.print(
             inner.right().saturating_sub(size_w),
             y,
             &size,
-            if sel { TEXT } else { MUTED },
+            if sel { th.text } else { th.muted },
             row_bg,
         );
     }
 }
 
 fn draw_collector(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
+    let th = theme::current();
     let title = format!(
         " Collector · {} · {} — nothing deleted until you confirm ",
         app.collector.len(),
         human_bytes(app.collector.total_bytes())
     );
-    let inner = draw_box(buf, area, &title, WARN, WARN);
+    let inner = draw_box(buf, area, &title, th.warn, th.warn);
     hits.list = inner;
 
     if app.collector.is_empty() {
@@ -503,8 +515,8 @@ fn draw_collector(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
             inner.x,
             inner.y,
             "Empty. Mark items with Space or d from the sunburst or Temp & cache view.",
-            MUTED,
-            BG,
+            th.muted,
+            th.bg,
         );
         return;
     }
@@ -522,8 +534,8 @@ fn draw_collector(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
     {
         let y = inner.y + row as u16;
         let sel = i == app.selected;
-        let row_bg = if sel { SELECT_BG } else { BG };
-        if sel {
+        let row_bg = row_background(th, sel, app.hovered_row(i));
+        if row_bg != th.bg {
             buf.fill(
                 Rect {
                     x: inner.x,
@@ -536,15 +548,15 @@ fn draw_collector(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
         }
         let size = human_bytes(item.size_bytes);
         let size_w = size.chars().count() as u16 + 1;
-        let x = buf.print(inner.x, y, " ● ", DANGER, row_bg);
+        let x = buf.print(inner.x, y, " ● ", th.danger, row_bg);
         let path_w = inner.width.saturating_sub(3 + size_w + 1) as usize;
         let path = truncate(&item.path.to_string_lossy(), path_w);
-        buf.print_styled(x, y, &path, TEXT, row_bg, sel);
+        buf.print_styled(x, y, &path, th.text, row_bg, sel);
         buf.print(
             inner.right().saturating_sub(size_w),
             y,
             &size,
-            if sel { TEXT } else { MUTED },
+            if sel { th.text } else { th.muted },
             row_bg,
         );
     }
@@ -567,6 +579,7 @@ fn draw_footer(buf: &mut Buffer, app: &App, area: Rect) -> Vec<(Rect, Action)> {
 }
 
 fn draw_footer_stats(buf: &mut Buffer, app: &App, y: u16, width: u16) {
+    let th = theme::current();
     if let (View::Picker, Some(picker)) = (&app.view, app.picker.as_ref()) {
         let dirs = picker.entries.iter().filter(|e| e.is_dir).count();
         let x = buf.print(
@@ -577,16 +590,16 @@ fn draw_footer_stats(buf: &mut Buffer, app: &App, y: u16, width: u16) {
                 group_u64(dirs as u64),
                 group_u64(picker.entries.len() as u64)
             ),
-            MUTED,
-            BG,
+            th.muted,
+            th.bg,
         );
         let target = picker.scan_target().display().to_string();
         buf.print_styled(
             x,
             y,
             &truncate(&target, width.saturating_sub(x + 1) as usize),
-            TEXT,
-            BG,
+            th.text,
+            th.bg,
             true,
         );
         return;
@@ -595,10 +608,10 @@ fn draw_footer_stats(buf: &mut Buffer, app: &App, y: u16, width: u16) {
         return;
     };
     let n = tree.get(tree.node_at(&app.cwd));
-    let mut x = buf.print(1, y, "used ", MUTED, BG);
-    x = buf.print_styled(x, y, &human_bytes(n.used), TEXT, BG, true);
-    x = buf.print(x, y, "  ·  apparent ", MUTED, BG);
-    x = buf.print_styled(x, y, &human_bytes(n.apparent), TEXT, BG, true);
+    let mut x = buf.print(1, y, "used ", th.muted, th.bg);
+    x = buf.print_styled(x, y, &human_bytes(n.used), th.text, th.bg, true);
+    x = buf.print(x, y, "  ·  apparent ", th.muted, th.bg);
+    x = buf.print_styled(x, y, &human_bytes(n.apparent), th.text, th.bg, true);
     let stats = format!(
         "  ·  {} files · {} dirs · {} errors · {} hardlinks skipped  ",
         group_u64(tree.stats.files),
@@ -606,14 +619,14 @@ fn draw_footer_stats(buf: &mut Buffer, app: &App, y: u16, width: u16) {
         group_u64(tree.stats.errors),
         group_u64(tree.stats.hardlinks_deduped)
     );
-    x = buf.print(x, y, &stats, MUTED, BG);
+    x = buf.print(x, y, &stats, th.muted, th.bg);
     if let Some(hint) = app.not_root_hint() {
         buf.print(
             x,
             y,
             &truncate(&hint, width.saturating_sub(x) as usize),
-            WARN,
-            BG,
+            th.warn,
+            th.bg,
         );
     }
 }
@@ -736,6 +749,7 @@ fn chip_is_active(app: &App, action: Action) -> bool {
 }
 
 fn draw_footer_chrome(buf: &mut Buffer, app: &App, y: u16, width: u16) -> Vec<(Rect, Action)> {
+    let th = theme::current();
     let budget = width.saturating_sub(2);
     let chips = fit_chips(footer_chips(app), budget);
     let mut buttons = Vec::new();
@@ -745,12 +759,15 @@ fn draw_footer_chrome(buf: &mut Buffer, app: &App, y: u16, width: u16) -> Vec<(R
         if x.saturating_add(w) > width {
             break;
         }
+        let hovered = app.hover == Some(Hover::Button(chip.action));
         let (fg, bg_c, bold) = if chip.action == Action::ConfirmDelete {
-            (BG, DANGER, true)
+            (th.bg, th.danger, true)
         } else if chip_is_active(app, chip.action) {
-            (BG, ACCENT, true)
+            (th.bg, th.accent, true)
+        } else if hovered {
+            (th.text, th.select_bg, true)
         } else {
-            (TEXT, CHIP, false)
+            (th.text, th.chip, false)
         };
         buf.print_styled(x, y, &chip.label, fg, bg_c, bold);
         buttons.push((
@@ -844,19 +861,23 @@ fn hints_width(hints: &[(&str, &str)]) -> u16 {
 }
 
 fn draw_hints(buf: &mut Buffer, mut x: u16, y: u16, hints: &[(&str, &str)]) {
+    let th = theme::current();
     for (i, (key, verb)) in hints.iter().enumerate() {
         if i > 0 {
-            x = buf.print(x, y, " · ", SMALLER, BG);
+            x = buf.print(x, y, " · ", th.smaller, th.bg);
         }
-        x = buf.print_styled(x, y, key, TEXT, BG, true);
-        x = buf.print(x, y, " ", MUTED, BG);
-        x = buf.print(x, y, verb, MUTED, BG);
+        x = buf.print_styled(x, y, key, th.text, th.bg, true);
+        x = buf.print(x, y, " ", th.muted, th.bg);
+        x = buf.print(x, y, verb, th.muted, th.bg);
     }
 }
 
 fn draw_footer_path(buf: &mut Buffer, app: &App, y: u16, width: u16) {
+    let th = theme::current();
     let line = if !app.status.is_empty() {
         app.status.clone()
+    } else if let Some(tip) = app.hover_line() {
+        tip
     } else {
         app.selected_path().unwrap_or_default()
     };
@@ -867,12 +888,13 @@ fn draw_footer_path(buf: &mut Buffer, app: &App, y: u16, width: u16) {
         1,
         y,
         &truncate(&line, width.saturating_sub(2) as usize),
-        MUTED,
-        BG,
+        th.muted,
+        th.bg,
     );
 }
 
 fn draw_confirm_modal(buf: &mut Buffer, app: &App, hits: &mut HitMap) {
+    let th = theme::current();
     let View::Confirm { typed } = &app.view else {
         return;
     };
@@ -884,8 +906,8 @@ fn draw_confirm_modal(buf: &mut Buffer, app: &App, hits: &mut HitMap) {
         width: w,
         height: h,
     };
-    buf.fill(rect, BG);
-    let inner = draw_box(buf, rect, " Confirm delete ", DANGER, DANGER);
+    buf.fill(rect, th.bg);
+    let inner = draw_box(buf, rect, " Confirm delete ", th.danger, th.danger);
 
     let n = app.collector.len();
     let total = human_bytes(app.collector.total_bytes());
@@ -914,8 +936,8 @@ fn draw_confirm_modal(buf: &mut Buffer, app: &App, hits: &mut HitMap) {
                 inner.x + 1,
                 inner.y + i as u16,
                 &truncate(line, inner.width.saturating_sub(2) as usize),
-                TEXT,
-                BG,
+                th.text,
+                th.bg,
             );
         }
     }
@@ -927,59 +949,122 @@ fn draw_confirm_modal(buf: &mut Buffer, app: &App, hits: &mut HitMap) {
         width: 8,
         height: 1,
     };
-    buf.print(cancel.x, by, " Cancel ", TEXT, PANEL);
+    buf.print(cancel.x, by, " Cancel ", th.text, th.panel);
     let ok = Rect {
         x: inner.x + 11,
         y: by,
         width: 10,
         height: 1,
     };
-    buf.print_styled(ok.x, by, "  Delete  ", BG, DANGER, true);
+    buf.print_styled(ok.x, by, "  Delete  ", th.bg, th.danger, true);
     hits.buttons.push((cancel, Action::Cancel));
     hits.buttons.push((ok, Action::ConfirmDelete));
 }
 
+/// One row of the help block.
+enum HelpLine {
+    Title(&'static str),
+    Key(&'static str, &'static str),
+    Note(&'static str),
+    Blank,
+}
+
+fn help_column(groups: &[&crate::cli::KeyGroup]) -> Vec<HelpLine> {
+    let mut lines = Vec::new();
+    for (i, g) in groups.iter().enumerate() {
+        if i > 0 {
+            lines.push(HelpLine::Blank);
+        }
+        lines.push(HelpLine::Title(g.title));
+        for (k, d) in g.keys {
+            lines.push(HelpLine::Key(k, d));
+        }
+        if let Some(n) = g.note {
+            lines.push(HelpLine::Note(n));
+        }
+    }
+    lines
+}
+
+/// Titled groups in two centered columns (one when narrow), the logo above
+/// when there is room. Every binding is always visible on 80×24.
 fn draw_help(buf: &mut Buffer) -> HitMap {
-    let (lw, lh) = logo::size();
-    // Use the full screen so a 24-row SSH session still shows every binding.
+    let th = theme::current();
     let rect = Rect {
         x: 0,
         y: 0,
         width: buf.width,
         height: buf.height,
     };
-    buf.fill(rect, BG);
-    let inner = draw_box(buf, rect, " keys  ·  ? and F1 ", ACCENT, ACCENT);
+    buf.fill(rect, th.bg);
+    let inner = draw_box(buf, rect, " keys ", th.accent, th.accent);
 
-    let lx = inner.x + (inner.width.saturating_sub(lw)) / 2;
-    paint_logo(buf, lx, inner.y, true);
+    let key_w = key_column_width() as u16;
+    let desc_w = 22u16;
+    let col_w = key_w + 2 + desc_w;
+    let groups: Vec<&crate::cli::KeyGroup> = KEY_GROUPS.iter().collect();
+    let gap = if inner.width >= col_w * 2 + 6 { 4 } else { 2 };
+    let two_col = inner.width >= col_w * 2 + gap + 2;
+    let (left, right) = if two_col {
+        // Split where the taller column is shortest.
+        let split = (1..groups.len())
+            .min_by_key(|&i| {
+                help_column(&groups[..i])
+                    .len()
+                    .max(help_column(&groups[i..]).len())
+            })
+            .unwrap_or(1);
+        (help_column(&groups[..split]), help_column(&groups[split..]))
+    } else {
+        (help_column(&groups), Vec::new())
+    };
+    let rows = left.len().max(right.len()) as u16;
+    let block_w = if two_col { col_w * 2 + gap } else { col_w };
 
-    let mut y = inner.y.saturating_add(lh).saturating_add(1);
-    for line in KEY_LINES {
-        if y >= inner.bottom() {
-            break;
-        }
-        buf.print(
-            inner.x + 2,
-            y,
-            &truncate(line, inner.width.saturating_sub(4) as usize),
-            if line.is_empty() || *line == "Mouse" {
-                MUTED
-            } else {
-                TEXT
-            },
-            BG,
-        );
-        y = y.saturating_add(1);
+    let (lw, lh) = logo::size();
+    let footer_h = 2u16; // blank + close row
+    let show_logo = inner.height >= rows + footer_h + lh + 1;
+    let block_h = rows + footer_h + if show_logo { lh + 1 } else { 0 };
+    let mut y = inner.y + inner.height.saturating_sub(block_h) / 2;
+    let x0 = inner.x + inner.width.saturating_sub(block_w) / 2;
+
+    if show_logo {
+        paint_logo(buf, inner.x + inner.width.saturating_sub(lw) / 2, y, true);
+        y += lh + 1;
     }
 
+    let columns: [(u16, &[HelpLine]); 2] = [(x0, &left), (x0 + col_w + gap, &right)];
+    for (cx, lines) in columns {
+        for (i, line) in lines.iter().enumerate() {
+            let ly = y + i as u16;
+            if ly >= inner.bottom() {
+                break;
+            }
+            match line {
+                HelpLine::Title(t) => {
+                    buf.print_styled(cx, ly, t, th.accent, th.bg, true);
+                }
+                HelpLine::Key(k, d) => {
+                    buf.print_styled(cx, ly, k, th.warn, th.bg, true);
+                    buf.print(cx + key_w + 2, ly, d, th.text, th.bg);
+                }
+                HelpLine::Note(n) => {
+                    buf.print(cx, ly, &truncate(n, col_w as usize), th.muted, th.bg);
+                }
+                HelpLine::Blank => {}
+            }
+        }
+    }
+
+    let cy = (y + rows + 1).min(inner.bottom().saturating_sub(1));
     let close = Rect {
-        x: inner.x + 2,
-        y: inner.bottom().saturating_sub(1),
+        x: x0,
+        y: cy,
         width: 7,
         height: 1,
     };
-    buf.print_styled(close.x, close.y, " Close ", BG, ACCENT, true);
+    buf.print_styled(close.x, close.y, " Close ", th.bg, th.accent, true);
+    draw_hints(buf, close.right() + 2, cy, &[("Esc", "or ? F1 closes")]);
     let mut hits = HitMap::empty();
     hits.buttons.push((close, Action::Back));
     hits
@@ -987,6 +1072,7 @@ fn draw_help(buf: &mut Buffer) -> HitMap {
 
 /// Color the shared logo: gold rays, nested ring hues, bright center.
 fn paint_logo(buf: &mut Buffer, x: u16, y: u16, color: bool) {
+    let th = theme::current();
     let (lw, _) = logo::size();
     for (i, line) in logo::lines().enumerate() {
         let row = y.saturating_add(i as u16);
@@ -1001,7 +1087,7 @@ fn paint_logo(buf: &mut Buffer, x: u16, y: u16, color: bool) {
             let (fg, bold) = if color {
                 logo_glyph_color(ch, col, lw as usize)
             } else {
-                (TEXT, false)
+                (th.text, false)
             };
             buf.set_cell(
                 cx,
@@ -1009,7 +1095,7 @@ fn paint_logo(buf: &mut Buffer, x: u16, y: u16, color: bool) {
                 Cell {
                     ch,
                     fg,
-                    bg: BG,
+                    bg: th.bg,
                     bold,
                 },
             );
@@ -1019,50 +1105,63 @@ fn paint_logo(buf: &mut Buffer, x: u16, y: u16, color: bool) {
 }
 
 fn logo_glyph_color(ch: char, col: usize, width: usize) -> (Rgb, bool) {
+    let th = theme::current();
     let mid = width / 2;
     let dist = col.abs_diff(mid);
     match ch {
-        '◎' => (ACCENT, true),
-        '╭' | '╮' | '╰' | '╯' if dist <= 3 => (PALETTE[0], true),
-        '╭' | '╮' | '╰' | '╯' => (PALETTE[1], false),
-        '─' | '│' if dist <= 3 => (PALETTE[0], false),
-        '─' | '│' if dist <= 6 => (PALETTE[1], false),
-        '─' | '│' | '╲' | '╱' | '·' => (WARN, false),
-        _ => (TEXT, false),
+        '◎' => (th.accent, true),
+        '╭' | '╮' | '╰' | '╯' if dist <= 3 => (th.palette[0], true),
+        '╭' | '╮' | '╰' | '╯' => (th.palette[1], false),
+        '─' | '│' if dist <= 3 => (th.palette[0], false),
+        '─' | '│' if dist <= 6 => (th.palette[1], false),
+        '─' | '│' | '╲' | '╱' | '·' => (th.warn, false),
+        _ => (th.text, false),
     }
 }
 
 /// Bordered box; returns the inner rect.
 fn draw_box(buf: &mut Buffer, area: Rect, title: &str, title_fg: Rgb, border: Rgb) -> Rect {
+    let th = theme::current();
     if area.width < 4 || area.height < 3 {
         return area;
     }
     let right = area.right() - 1;
     let bottom = area.bottom() - 1;
-    buf.print(area.x, area.y, "┌", border, BG);
-    buf.print(right, area.y, "┐", border, BG);
-    buf.print(area.x, bottom, "└", border, BG);
-    buf.print(right, bottom, "┘", border, BG);
+    buf.print(area.x, area.y, "╭", border, th.bg);
+    buf.print(right, area.y, "╮", border, th.bg);
+    buf.print(area.x, bottom, "╰", border, th.bg);
+    buf.print(right, bottom, "╯", border, th.bg);
     for x in (area.x + 1)..right {
-        buf.print(x, area.y, "─", border, BG);
-        buf.print(x, bottom, "─", border, BG);
+        buf.print(x, area.y, "─", border, th.bg);
+        buf.print(x, bottom, "─", border, th.bg);
     }
     for y in (area.y + 1)..bottom {
-        buf.print(area.x, y, "│", border, BG);
-        buf.print(right, y, "│", border, BG);
+        buf.print(area.x, y, "│", border, th.bg);
+        buf.print(right, y, "│", border, th.bg);
     }
     buf.print(
         area.x + 2,
         area.y,
         &truncate(title, area.width.saturating_sub(4) as usize),
         title_fg,
-        BG,
+        th.bg,
     );
     Rect {
         x: area.x + 1,
         y: area.y + 1,
         width: area.width - 2,
         height: area.height - 2,
+    }
+}
+
+/// Selection beats hover; hover is a whisper of the selection color.
+fn row_background(th: &theme::Theme, selected: bool, hovered: bool) -> Rgb {
+    if selected {
+        th.select_bg
+    } else if hovered {
+        th.hover_bg
+    } else {
+        th.bg
     }
 }
 

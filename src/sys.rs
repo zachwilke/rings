@@ -86,6 +86,7 @@ pub(crate) mod win32 {
     pub const RIGHTMOST_BUTTON_PRESSED: u32 = 0x0002;
     pub const MOUSE_MOVED: u32 = 0x0001;
     pub const DOUBLE_CLICK: u32 = 0x0002;
+    pub const MOUSE_WHEELED: u32 = 0x0004;
 
     pub const LEFT_CTRL_PRESSED: u32 = 0x0008;
     pub const RIGHT_CTRL_PRESSED: u32 = 0x0004;
