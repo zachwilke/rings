@@ -2,15 +2,16 @@
 //! TUI first paint, help overlay, `rings help` / `--help`, and the README.
 
 /// Compact nested-rings sunburst. 7 lines, dark-terminal friendly, not figlet.
-pub const LOGO: &str = "\
-       ╲    │    ╱
-     ·  ╭───────╮  ·
-  ─     │ ╭───╮ │     ─
-        │ │ ◎ │ │
-  ─     │ ╰───╯ │     ─
-     ·  ╰───────╯  ·
-       ╱    │    ╲
-";
+/// Built with `concat!` so a trailing `\` cannot eat the first line's indent.
+pub const LOGO: &str = concat!(
+    "       ╲    │    ╱\n",
+    "     ·  ╭───────╮  ·\n",
+    "  ─     │ ╭───╮ │     ─\n",
+    "        │ │ ◎ │ │\n",
+    "  ─     │ ╰───╯ │     ─\n",
+    "     ·  ╰───────╯  ·\n",
+    "       ╱    │    ╲\n",
+);
 
 pub fn lines() -> impl Iterator<Item = &'static str> {
     LOGO.lines().filter(|l| !l.is_empty())
@@ -38,6 +39,11 @@ mod tests {
         assert!(text.contains('◎'), "nested-ring center");
         assert!(text.contains('╭') && text.contains('╰'), "rings");
         assert!(text.contains('╲') && text.contains('╱'), "sunburst rays");
+        let first = lines().next().unwrap();
+        assert!(
+            first.starts_with("       ╲"),
+            "first line must keep its indent (no `\\` skip): {first:?}"
+        );
     }
 
     #[test]

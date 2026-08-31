@@ -66,7 +66,7 @@ mod tests {
         );
         assert!(!text.contains("\x1b["), "no CSI sequences");
 
-        let mut bodies: Vec<&str> = text.lines().skip(1).filter(|l| !l.is_empty()).collect();
+        let bodies: Vec<&str> = text.lines().skip(1).filter(|l| !l.is_empty()).collect();
         assert!(bodies.len() >= 2, "root dir + large file at least");
         let sizes: Vec<u64> = bodies
             .iter()

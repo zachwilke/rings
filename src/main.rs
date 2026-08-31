@@ -52,8 +52,8 @@ fn run(cli: Cli) -> Result<(), String> {
                 .write_all(json.as_bytes())
                 .map_err(|e| e.to_string())?;
         }
-        if let Some(csv_path) = cli.csv {
-            let n = write_csv(&csv_path, &tree, tree.root, &BTreeSet::new())?;
+        if let Some(csv_path) = &cli.csv {
+            let n = write_csv(csv_path, &tree, tree.root, &BTreeSet::new())?;
             eprintln!("wrote {n} rows to {}", csv_path.display());
         }
         if cli.plain || (!cli.json && cli.csv.is_none()) {
