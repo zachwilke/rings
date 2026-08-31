@@ -23,16 +23,25 @@ pub const PALETTE: [Rgb; 10] = [
     Rgb(218, 142, 62),
 ];
 
-pub fn dim_color(color: Rgb, ring: usize) -> Rgb {
+/// Fade so the outermost ring stays readable (~0.62) at 4 rings or 8.
+pub fn dim_color(color: Rgb, ring: usize, rings: usize) -> Rgb {
     let Rgb(r, g, b) = color;
-    let mut keep = 1.0f32;
-    for _ in 0..ring {
-        keep *= 0.82;
-    }
+    let last = rings.saturating_sub(1).max(1) as f32;
+    let keep = 1.0 - 0.38 * (ring as f32 / last).min(1.0);
     Rgb(
         (r as f32 * keep) as u8,
         (g as f32 * keep) as u8,
         (b as f32 * keep) as u8,
+    )
+}
+
+/// 1-pixel-dark wedge edge: keep the hue, drop the value.
+pub fn separator_color(color: Rgb) -> Rgb {
+    let Rgb(r, g, b) = color;
+    Rgb(
+        (r as u16 * 42 / 100) as u8,
+        (g as u16 * 42 / 100) as u8,
+        (b as u16 * 42 / 100) as u8,
     )
 }
 
