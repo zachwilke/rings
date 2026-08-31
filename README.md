@@ -4,7 +4,7 @@
   ─     │ ╭───╮ │     ─
         │ │ ◎ │ │
   ─     │ ╰───╯ │     ─
-     ·  ╰───────╯  ·
+     ·  ╰──────╯  ·
        ╱    │    ╲
 ```
 
@@ -17,7 +17,7 @@ A DaisyDisk-style disk map for Linux servers, in one tiny static binary. Scan a 
 Built for the machine that is already almost full: the download is a ~245 KB `.xz`, the binary ~585 KB, fully static (musl), zero runtime dependencies.
 
 ```bash
-curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.0/rings-x86_64-linux-musl.xz | xz -d > rings
+curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.1/rings-x86_64-linux-musl.xz | xz -d > rings
 chmod +x rings
 sudo ./rings /
 ```
