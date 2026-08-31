@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+#[cfg(unix)]
 use crate::constants::{SAFEGUARD_EXACT, SAFEGUARD_PREFIXES};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -14,19 +15,42 @@ pub fn refuse_reason(path: &Path) -> Option<SafeguardRefuse> {
     let canon = canonicalize_best_effort(path);
     let raw = display_abs(&canon);
 
-    for exact in SAFEGUARD_EXACT {
-        if raw == *exact {
-            return Some(SafeguardRefuse {
-                path: canon,
-                reason: format!("{exact} is a safeguarded system path"),
-            });
+    if is_system_root(&raw) {
+        return Some(SafeguardRefuse {
+            path: canon,
+            reason: format!("{raw} is a safeguarded system path"),
+        });
+    }
+
+    #[cfg(unix)]
+    {
+        for exact in SAFEGUARD_EXACT {
+            if path_eq(&raw, exact) {
+                return Some(SafeguardRefuse {
+                    path: canon,
+                    reason: format!("{exact} is a safeguarded system path"),
+                });
+            }
+        }
+        for prefix in SAFEGUARD_PREFIXES {
+            if path_starts(&raw, prefix) {
+                return Some(SafeguardRefuse {
+                    path: canon.clone(),
+                    reason: format!(
+                        "{raw} is under safeguarded prefix {}",
+                        prefix.trim_end_matches('/')
+                    ),
+                });
+            }
         }
     }
-    for prefix in SAFEGUARD_PREFIXES {
-        if raw.starts_with(prefix) {
+
+    #[cfg(windows)]
+    {
+        if let Some(reason) = windows_refuse(&raw) {
             return Some(SafeguardRefuse {
-                path: canon.clone(),
-                reason: format!("{raw} is under safeguarded prefix {}", prefix.trim_end_matches('/')),
+                path: canon,
+                reason,
             });
         }
     }
@@ -74,24 +98,103 @@ fn fs_canonicalize(path: &Path) -> Option<PathBuf> {
 fn display_abs(path: &Path) -> String {
     let s = path.to_string_lossy();
     if s.is_empty() {
-        return "/".into();
+        return if cfg!(windows) {
+            String::new()
+        } else {
+            "/".into()
+        };
     }
-    if s != "/" && s.ends_with('/') {
-        s.trim_end_matches('/').to_string()
-    } else {
-        s.into_owned()
+    #[cfg(windows)]
+    {
+        let mut t = s.replace('/', "\\");
+        if let Some(stripped) = t.strip_prefix(r"\\?\") {
+            t = stripped.to_string();
+        }
+        if t.len() > 3 && t.ends_with('\\') {
+            t.pop();
+        }
+        return t;
+    }
+    #[cfg(not(windows))]
+    {
+        if s != "/" && s.ends_with('/') {
+            s.trim_end_matches('/').to_string()
+        } else {
+            s.into_owned()
+        }
     }
 }
 
 fn paths_equal(a: &Path, b: &Path) -> bool {
-    a == b || display_abs(a) == display_abs(b)
+    a == b || path_eq(&display_abs(a), &display_abs(b))
 }
 
+fn path_eq(a: &str, b: &str) -> bool {
+    if cfg!(windows) {
+        a.eq_ignore_ascii_case(b)
+    } else {
+        a == b
+    }
+}
+
+fn path_starts(a: &str, prefix: &str) -> bool {
+    if cfg!(windows) {
+        a.len() >= prefix.len() && a[..prefix.len()].eq_ignore_ascii_case(prefix)
+    } else {
+        a.starts_with(prefix)
+    }
+}
+
+fn is_system_root(raw: &str) -> bool {
+    if raw == "/" {
+        return true;
+    }
+    // `C:` or `C:\` (any drive letter)
+    let b = raw.as_bytes();
+    matches!(b, [d, b':'] | [d, b':', b'\\' | b'/'] if d.is_ascii_alphabetic())
+}
+
+#[cfg(windows)]
+fn windows_refuse(raw: &str) -> Option<String> {
+    const EXACT: &[&str] = &[
+        r"C:\Windows",
+        r"C:\Program Files",
+        r"C:\Program Files (x86)",
+        r"C:\Users",
+        r"C:\ProgramData",
+    ];
+    const PREFIXES: &[&str] = &[
+        r"C:\Windows\",
+        r"C:\Program Files\",
+        r"C:\Program Files (x86)\",
+    ];
+    for exact in EXACT {
+        if path_eq(raw, exact) {
+            return Some(format!("{exact} is a safeguarded system path"));
+        }
+    }
+    for prefix in PREFIXES {
+        if path_starts(raw, prefix) {
+            return Some(format!(
+                "{raw} is under safeguarded prefix {}",
+                prefix.trim_end_matches('\\')
+            ));
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
 fn kernel_release() -> Option<String> {
     std::fs::read_to_string("/proc/sys/kernel/osrelease")
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn kernel_release() -> Option<String> {
+    None
 }
 
 fn kernel_refuse(raw: &str) -> Option<String> {
@@ -116,6 +219,7 @@ mod tests {
     use super::*;
     use std::path::Path;
 
+    #[cfg(unix)]
     #[test]
     fn refuses_obvious_system_paths() {
         for p in ["/", "/boot", "/etc", "/usr", "/bin", "/sbin"] {
@@ -132,12 +236,34 @@ mod tests {
         assert!(refuse_reason(Path::new("/boot/grub")).is_some());
     }
 
+    #[cfg(unix)]
     #[test]
     fn allows_typical_waste_paths() {
         assert!(refuse_reason(Path::new("/tmp/foo")).is_none());
         assert!(refuse_reason(Path::new("/var/cache/apt")).is_none());
         assert!(refuse_reason(Path::new("/var/log/old.log")).is_none());
         assert!(refuse_reason(Path::new("/home/zach/.cache")).is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn refuses_macos_system_roots() {
+        assert!(refuse_reason(Path::new("/System")).is_some());
+        assert!(refuse_reason(Path::new("/System/Library")).is_some());
+        assert!(refuse_reason(Path::new("/private/etc/hosts")).is_some());
+        assert!(refuse_reason(Path::new("/private/tmp/x")).is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn refuses_windows_system_paths() {
+        assert!(refuse_reason(Path::new(r"C:\")).is_some());
+        assert!(refuse_reason(Path::new(r"C:\Windows")).is_some());
+        assert!(refuse_reason(Path::new(r"C:\Windows\System32\cmd.exe")).is_some());
+        assert!(refuse_reason(Path::new(r"C:\Program Files")).is_some());
+        assert!(refuse_reason(Path::new(r"C:\Users")).is_some());
+        assert!(refuse_reason(Path::new(r"C:\Users\zach\AppData\Local\Temp\x")).is_none());
+        assert!(refuse_reason(Path::new(r"D:\scratch")).is_none());
     }
 
     #[test]

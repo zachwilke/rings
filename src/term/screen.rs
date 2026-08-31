@@ -127,16 +127,7 @@ impl Buffer {
             if cx >= self.width {
                 break;
             }
-            self.set_cell(
-                cx,
-                y,
-                Cell {
-                    ch,
-                    fg,
-                    bg,
-                    bold,
-                },
-            );
+            self.set_cell(cx, y, Cell { ch, fg, bg, bold });
             cx = cx.saturating_add(1);
         }
         cx
@@ -171,8 +162,7 @@ pub fn flush_diff(buf: &Buffer, prev: Option<&Buffer>) -> io::Result<()> {
     let mut last_bold = false;
     let mut cursor: Option<(u16, u16)> = None;
 
-    let same_shape =
-        prev.is_some_and(|p| p.width == buf.width && p.height == buf.height);
+    let same_shape = prev.is_some_and(|p| p.width == buf.width && p.height == buf.height);
 
     for y in 0..buf.height {
         for x in 0..buf.width {

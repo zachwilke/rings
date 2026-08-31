@@ -18,12 +18,12 @@ pub const KEY_LINES: &[&str] = &[
     "q                     quit",
     "Mouse  click slice/row to select · double-click to drill · click footer",
     "Delete is never automatic. The collector shows paths and total size.",
-    "As root, type DELETE to unlink. Deletes are logged to stderr and a log file.",
+    "As root/Administrator, type DELETE to unlink. Deletes are logged.",
     "Esc / ? / F1 / h      close this help",
 ];
 
 const USAGE: &str = "\
-rings — disk usage sunburst for Linux servers (SSH TUI)
+rings — disk usage sunburst for Linux, macOS, and Windows
 
 rings scans a path, then shows a DaisyDisk-style radial sunburst and a
 largest-first list. Mark waste for deletion only after an explicit
@@ -50,13 +50,13 @@ When stdout is not a terminal (piped or redirected), rings prints the
 plain table instead of opening the TUI. --csv, --json, and --plain
 never enter the TUI, even in a terminal.
 
-Full-disk scan (normal on a server):
+Full-disk scan:
 
-    sudo rings /
+    sudo rings /                 # Linux, Raspberry Pi OS, macOS
+    rings.exe C:\\               # Windows PowerShell (as Administrator)
     rings --plain /
 
-Without root, rings still works on what you can read and tells you when
-permission errors mean you need sudo.
+Without root / Administrator, rings still works on what you can read.
 
 CSV and plain export include every directory, every temp/cache/log/journal/crash
 hit, and every file of 1 MiB or more. Tiny ordinary files are omitted.
@@ -199,7 +199,10 @@ mod tests {
     #[test]
     fn help_text_contains_logo_and_key_bindings() {
         let text = help_text();
-        assert!(text.contains(LOGO.trim_end()), "help must start from the shared logo");
+        assert!(
+            text.contains(LOGO.trim_end()),
+            "help must start from the shared logo"
+        );
         for needle in [
             "j k",
             "Enter",

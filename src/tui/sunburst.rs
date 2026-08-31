@@ -25,7 +25,17 @@ pub fn build_slices(
     selected: Option<usize>,
 ) -> Vec<Slice> {
     let mut slices = Vec::new();
-    layout(tree, current, 0.0, 1.0, 0, apparent, 0, selected, &mut slices);
+    layout(
+        tree,
+        current,
+        0.0,
+        1.0,
+        0,
+        apparent,
+        0,
+        selected,
+        &mut slices,
+    );
     slices
 }
 
@@ -71,7 +81,15 @@ fn layout(
             grouped: false,
         });
         layout(
-            tree, cid, cursor, slice_end, ring + 1, apparent, color_i, selected, out,
+            tree,
+            cid,
+            cursor,
+            slice_end,
+            ring + 1,
+            apparent,
+            color_i,
+            selected,
+            out,
         );
         cursor = slice_end;
         color_i += 1;

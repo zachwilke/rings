@@ -3,13 +3,11 @@ use std::time::Instant;
 
 use crate::constants::{DOUBLE_CLICK, TUI_EXPORT_FILENAME};
 use crate::csv_export::write_csv;
-use crate::delete::{
-    commit, needs_typed_confirm, Collector, CollectorItem, Confirm,
-};
+use crate::delete::{commit, needs_typed_confirm, Collector, CollectorItem, Confirm};
 use crate::dto::waste_hits;
 use crate::scan::{Progress, Tree};
 use crate::size::human_bytes;
-use crate::unix;
+use crate::sys;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum View {
@@ -67,7 +65,7 @@ impl App {
             apparent,
             progress: None,
             status: String::new(),
-            is_root: unix::running_as_root(),
+            is_root: sys::running_as_root(),
             last_click: None,
             quit: false,
             scan_path,
@@ -362,7 +360,10 @@ impl App {
     }
 
     pub fn export_current(&mut self) -> Result<PathBuf, String> {
-        let tree = self.tree.as_ref().ok_or_else(|| "scan is not finished".to_string())?;
+        let tree = self
+            .tree
+            .as_ref()
+            .ok_or_else(|| "scan is not finished".to_string())?;
         let id = tree.node_at(&self.cwd);
         let dest = PathBuf::from(TUI_EXPORT_FILENAME);
         let n = write_csv(&dest, tree, id, &self.collector.paths_set())?;
@@ -408,13 +409,6 @@ impl App {
             .as_ref()
             .map(|t| t.stats.errors + t.stats.permission_denied)
             .unwrap_or(0);
-        Some(format!(
-            "not root — sudo rings / for a full-disk scan{}",
-            if errors > 0 {
-                format!(" ({errors} unreadable)")
-            } else {
-                String::new()
-            }
-        ))
+        Some(sys::not_privileged_hint(errors))
     }
 }

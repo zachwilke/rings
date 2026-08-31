@@ -27,11 +27,7 @@ pub fn run(path: PathBuf, opts: WalkOptions, apparent: bool) -> Result<(), Strin
     result
 }
 
-fn event_loop(
-    term: &Term,
-    app: &mut App,
-    rx: &mpsc::Receiver<WalkEvent>,
-) -> Result<(), String> {
+fn event_loop(term: &Term, app: &mut App, rx: &mpsc::Receiver<WalkEvent>) -> Result<(), String> {
     let mut prev: Option<Buffer> = None;
     let mut hits = HitMap::empty();
     let mut dirty = true;
@@ -42,13 +38,8 @@ fn event_loop(
             match ev {
                 WalkEvent::Progress(p) => app.progress = Some(p),
                 WalkEvent::Done(Ok(tree)) => {
-                    if !app.is_root && tree.stats.errors > 0 {
-                        app.status = format!(
-                            "not root — sudo rings / to include restricted dirs ({} errors)",
-                            tree.stats.errors
-                        );
-                    } else if !app.is_root {
-                        app.status = "not root — sudo rings / to scan the whole disk".into();
+                    if !app.is_root {
+                        app.status = crate::sys::not_privileged_status(tree.stats.errors);
                     }
                     app.tree = Some(tree);
                     app.view = View::Browse;
@@ -106,12 +97,7 @@ fn handle_key(app: &mut App, key: Key) {
     if matches!(app.view, View::Help) {
         if matches!(
             key,
-            Key::Esc
-                | Key::Char('h')
-                | Key::Char('q')
-                | Key::Char('?')
-                | Key::F1
-                | Key::Backspace
+            Key::Esc | Key::Char('h') | Key::Char('q') | Key::Char('?') | Key::F1 | Key::Backspace
         ) {
             app.view = View::Browse;
         }
@@ -189,7 +175,8 @@ fn handle_click(app: &mut App, hits: &HitMap, x: u16, y: u16) {
                 }
                 return;
             }
-            if let Some(i) = row_index_at(hits.list, y, app.list_offset, app.current_children().len())
+            if let Some(i) =
+                row_index_at(hits.list, y, app.list_offset, app.current_children().len())
             {
                 app.selected = i;
                 if dbl {
@@ -270,11 +257,16 @@ mod tests {
             "child list should name the directory:\n{screen}"
         );
         assert!(screen.contains("rings"), "header:\n{screen}");
-        assert!(screen.contains("? help"), "footer should hint ? help:\n{screen}");
-        let has_block =
-            screen.contains('█') || screen.contains('▀') || screen.contains('▄');
+        assert!(
+            screen.contains("? help"),
+            "footer should hint ? help:\n{screen}"
+        );
+        let has_block = screen.contains('█') || screen.contains('▀') || screen.contains('▄');
         assert!(has_block, "sunburst should paint block cells:\n{screen}");
-        assert!(!hits.slices.is_empty(), "slices should exist for hit testing");
+        assert!(
+            !hits.slices.is_empty(),
+            "slices should exist for hit testing"
+        );
         assert!(!hits.buttons.is_empty(), "footer buttons should exist");
     }
 
@@ -282,8 +274,11 @@ mod tests {
     fn click_selects_list_row_and_button_quits() {
         let tmp = tempfile::TempDir::new().unwrap();
         for i in 0..4 {
-            fs::write(tmp.path().join(format!("f{i}.dat")), vec![b'x'; 4096 * (i + 1)])
-                .unwrap();
+            fs::write(
+                tmp.path().join(format!("f{i}.dat")),
+                vec![b'x'; 4096 * (i + 1)],
+            )
+            .unwrap();
         }
         let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
         let mut app = App::new(tmp.path().to_path_buf(), false);
@@ -363,7 +358,13 @@ mod tests {
         let mut buf = Buffer::new(80, 24, BG);
         draw::draw(&mut buf, &app);
         let screen = buf.text();
-        assert!(screen.contains('◎'), "scan first paint should show the logo:\n{screen}");
-        assert!(screen.contains('╭'), "nested rings on first paint:\n{screen}");
+        assert!(
+            screen.contains('◎'),
+            "scan first paint should show the logo:\n{screen}"
+        );
+        assert!(
+            screen.contains('╭'),
+            "nested rings on first paint:\n{screen}"
+        );
     }
 }

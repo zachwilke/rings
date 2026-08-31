@@ -10,19 +10,61 @@
 
 # rings
 
-A DaisyDisk-style disk map for Linux servers, in one tiny static binary. Scan a path over SSH, see a colorful sunburst of what's eating the disk, drill in, and clear waste — with nothing deleted until you explicitly confirm.
+A DaisyDisk-style disk map in one tiny static binary. Scan a path, see a colorful sunburst of what's eating the disk, drill in, and clear waste — with nothing deleted until you explicitly confirm.
+
+Works on Linux (Debian, Ubuntu, RHEL/Fedora/CentOS, Arch), Raspberry Pi OS / Raspbian (64-bit and 32-bit), macOS, and Windows PowerShell.
 
 ## Install
 
-Built for the machine that is already almost full: the download is a ~245 KB `.xz`, the binary ~585 KB, fully static (musl), zero runtime dependencies.
+Linux downloads are one static musl binary per arch — the same file for Debian/Ubuntu, RHEL/Fedora/CentOS, and Arch. No glibc version soup, no distro repo.
+
+### Linux
 
 ```bash
-curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.1/rings-x86_64-linux-musl.xz | xz -d > rings
+curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.2/rings-x86_64-linux-musl.xz | xz -d > rings
 chmod +x rings
 sudo ./rings /
 ```
 
-Or build from source (Rust 1.88+, the only dependency is `libc`):
+On aarch64 machines (servers, 64-bit Pi OS) use `rings-aarch64-linux-musl.xz` instead.
+
+### Raspberry Pi / Raspbian
+
+`uname -m` picks the asset: `aarch64` is 64-bit Raspberry Pi OS (Pi 3/4/5). `armv7l` is 32-bit Raspberry Pi OS (Pi 2/3/4). `armv6l` is Pi 1 / Zero.
+
+```bash
+# 64-bit Raspberry Pi OS
+curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.2/rings-aarch64-linux-musl.xz | xz -d > rings
+# 32-bit Raspberry Pi OS (Pi 2/3/4)
+# curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.2/rings-armv7-linux-musleabihf.xz | xz -d > rings
+# Pi 1 / Zero (armv6)
+# curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.2/rings-arm-linux-musleabihf.xz | xz -d > rings
+chmod +x rings
+sudo ./rings /
+```
+
+### macOS
+
+```bash
+# Apple Silicon
+curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.2/rings-aarch64-apple-darwin.xz | xz -d > rings
+# Intel: rings-x86_64-apple-darwin.xz
+chmod +x rings
+sudo ./rings /
+```
+
+### Windows (PowerShell)
+
+```powershell
+irm https://github.com/zachwilke/rings/releases/download/v0.1.2/rings-x86_64-pc-windows-msvc.exe.zip -OutFile rings.zip
+Expand-Archive -Force rings.zip .
+.\rings.exe C:\
+.\rings.exe --plain C:\
+```
+
+Or `Invoke-WebRequest` if you prefer the long name. `--plain`, `--csv`, `--json`, and `--help` work from any PowerShell; the sunburst TUI uses the Windows console (Windows Terminal looks best).
+
+Or build from source (Rust 1.88+; `libc` on Unix only):
 
 ```bash
 cargo build --release --target x86_64-unknown-linux-musl
@@ -34,7 +76,8 @@ We deliberately skip UPX: it shrinks the download but needs extra memory and dis
 ## Usage
 
 ```bash
-sudo rings /           # full-disk scan (the normal server move)
+sudo rings /           # full-disk scan (Linux, Raspberry Pi OS, macOS)
+rings.exe C:\          # Windows PowerShell (Administrator for the whole disk)
 rings /var/log         # any path; default is .
 rings help             # logo, usage, and every key binding
 rings --plain /        # parseable table to stdout, no TUI
@@ -44,7 +87,7 @@ rings --json /srv      # analyzed tree as JSON
 
 When stdout is not a terminal (a pipe or redirect), rings prints the plain table automatically — no TUI, no spinner. `--plain` / `--no-tui`, `--csv`, and `--json` never enter the TUI, even in a terminal.
 
-rings stays on one filesystem (`--all-filesystems` to cross), skips `/proc` `/sys` `/dev` `/run`, never follows symlinked directories, counts hard-linked inodes once, and counts permission errors instead of crashing. Without root it scans what it can read and reminds you `sudo rings /` sees everything.
+rings stays on one filesystem (`--all-filesystems` to cross), skips Linux virtual mounts (`/proc` `/sys` `/dev` `/run`; `/dev` on macOS), never follows symlinked directories, counts hard-linked inodes once, and counts permission errors instead of crashing. Without root it scans what it can read and reminds you `sudo rings /` (or Administrator on Windows) sees everything.
 
 Press `?` or `F1` in the TUI for the full key list (the footer always hints `? help`). `rings help` and `rings --help` print the same list.
 
@@ -58,11 +101,11 @@ Press `?` or `F1` in the TUI for the full key list (the footer always hints `? h
 
 ## Delete, carefully
 
-Mark items with Space, review the **collector** (`c`) — full list, total size — then confirm with `x`. As root you must type `DELETE`; as a user, items go to trash when available. Every deletion is logged (stderr plus `/var/log/rings-delete.log` or `~/.local/share/rings/delete.log`). rings refuses to touch `/`, `/boot`, `/etc`, `/usr`, `/bin`, `/sbin`, `/lib`, the running kernel, and its own binary.
+Mark items with Space, review the **collector** (`c`) — full list, total size — then confirm with `x`. As root/Administrator you must type `DELETE`; as a user, items go to trash (XDG Trash on Linux, `~/.Trash` on macOS, Recycle Bin on Windows). Every deletion is logged. rings refuses to touch system roots (`/`, `/boot`, `/etc`, `/System`, `C:\`, `C:\Windows`, …), the running kernel, and its own binary.
 
 ## Temp & cache
 
-`f` surfaces the usual server waste — `/tmp`, `/var/tmp`, `/var/cache` (apt/dnf/yum/pacman), systemd journal, old logs, crash dumps, `~/.cache` — tagged by color in the sunburst and the CSV. Inspect, then decide. Nothing is ever auto-deleted.
+`f` surfaces the usual waste — `/tmp`, `/var/cache` (apt/dnf/yum/pacman), systemd journal, old logs, crash dumps, `~/.cache`, macOS `Library/Caches`, Windows `%TEMP%` — tagged by color in the sunburst and the CSV. Inspect, then decide. Nothing is ever auto-deleted.
 
 ## CSV and plain
 

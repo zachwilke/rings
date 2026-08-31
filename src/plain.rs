@@ -82,7 +82,9 @@ mod tests {
         sorted.sort_by(|a, b| b.cmp(a));
         assert_eq!(sizes, sorted, "rows must be largest-first");
 
-        assert!(bodies.iter().any(|l| l.contains("big.dat") && l.contains("file")));
+        assert!(bodies
+            .iter()
+            .any(|l| l.contains("big.dat") && l.contains("file")));
         assert!(bodies.iter().any(|l| l.split('\t').nth(1) == Some("dir")));
     }
 }

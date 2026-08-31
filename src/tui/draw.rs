@@ -7,7 +7,7 @@ use crate::term::{Buffer, Cell, Rect, Rgb};
 use crate::tui::app::{Action, App, View};
 use crate::tui::sunburst::{self, Slice};
 use crate::tui::theme::{
-    self, category_color, ACCENT, BG, DANGER, MUTED, PANEL, PALETTE, SELECT_BG, TEXT, WARN,
+    self, category_color, ACCENT, BG, DANGER, MUTED, PALETTE, PANEL, SELECT_BG, TEXT, WARN,
 };
 
 pub struct HitMap {
@@ -70,7 +70,10 @@ fn draw_scan(buf: &mut Buffer, app: &App) {
     let cy = ly.saturating_add(lh).saturating_add(1);
     let spinner = SPINNER[app.spin_frame(SPINNER.len())];
     let path_line = app.scan_path.display().to_string();
-    let px = (buf.width.saturating_sub(path_line.chars().count() as u16 + 2)) / 2;
+    let px = (buf
+        .width
+        .saturating_sub(path_line.chars().count() as u16 + 2))
+        / 2;
     let x = buf.print(px, cy, spinner, ACCENT, BG);
     buf.print(
         x + 1,
@@ -94,9 +97,9 @@ fn draw_scan(buf: &mut Buffer, app: &App) {
     buf.print(sx, cy.saturating_add(3), &shown, MUTED, BG);
 
     let hint = if app.is_root {
-        "scanning as root · other filesystems skipped · /proc /sys /dev /run skipped"
+        crate::sys::scan_banner_privileged()
     } else {
-        "not root · readable paths only · sudo rings / for a full-disk scan"
+        crate::sys::scan_banner_unprivileged()
     };
     let y = buf.height.saturating_sub(2);
     let hx = (buf.width.saturating_sub(hint.chars().count() as u16)) / 2;
@@ -444,7 +447,14 @@ fn draw_footer(buf: &mut Buffer, app: &App, area: Rect) -> Vec<(Rect, Action)> {
         } else {
             (TEXT, PANEL)
         };
-        buf.print_styled(x, button_y, &label, fg, bg_c, action == Action::ConfirmDelete);
+        buf.print_styled(
+            x,
+            button_y,
+            &label,
+            fg,
+            bg_c,
+            action == Action::ConfirmDelete,
+        );
         buttons.push((
             Rect {
                 x,

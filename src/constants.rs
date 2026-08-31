@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-/// Linux `st_blocks` unit.
+/// Unix `st_blocks` unit.
 pub const BLOCK_BYTES: u64 = 512;
 
 /// Files smaller than this are omitted from CSV/JSON unless they are waste hits.
@@ -11,18 +11,40 @@ pub const EXPORT_FILE_MIN_BYTES: u64 = 1_048_576;
 /// How often the walker reports progress.
 pub const PROGRESS_EVERY_ENTRIES: u64 = 256;
 
-/// Virtual filesystems never descended into, even on an explicit root scan.
+/// Virtual / unusable paths never descended into, even on an explicit root scan.
+/// Linux-only mounts (`/proc` `/sys` `/run`) are listed on all Unix: they are
+/// a no-op on macOS where those directories do not exist. `/dev` is skipped
+/// on both Linux and macOS.
+#[cfg(unix)]
 pub const SPECIAL_SKIP_PATHS: &[&str] = &["/proc", "/sys", "/dev", "/run"];
 
 /// Exact paths that must never be deleted.
+#[cfg(unix)]
 pub const SAFEGUARD_EXACT: &[&str] = &[
-    "/", "/boot", "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64",
+    "/", "/boot", "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/System", "/private",
 ];
 
 /// Prefixes (must include trailing slash) that must never be deleted.
+#[cfg(unix)]
 pub const SAFEGUARD_PREFIXES: &[&str] = &[
-    "/boot/", "/etc/", "/usr/", "/bin/", "/sbin/", "/lib/", "/lib64/",
+    "/boot/",
+    "/etc/",
+    "/usr/",
+    "/bin/",
+    "/sbin/",
+    "/lib/",
+    "/lib64/",
+    "/System/",
+    "/private/etc/",
 ];
+
+/// Windows component names (matched case-insensitively) that must not be walked.
+#[cfg(windows)]
+pub const SPECIAL_SKIP_COMPONENTS: &[&str] =
+    &["$Recycle.Bin", "System Volume Information", "Recovery"];
+
+#[cfg(windows)]
+pub const SPECIAL_SKIP_FILES: &[&str] = &["pagefile.sys", "hiberfil.sys", "swapfile.sys"];
 
 /// Phrase the operator must type to permanently unlink when trash is unavailable.
 pub const DELETE_CONFIRM_PHRASE: &str = "DELETE";
@@ -50,3 +72,4 @@ pub const SMALLER_OBJECTS_LABEL: &str = "smaller objects";
 pub const DELETE_LOG_ROOT: &str = "/var/log/rings-delete.log";
 pub const DELETE_LOG_USER_REL: &str = ".local/share/rings/delete.log";
 pub const TRASH_REL: &str = ".local/share/Trash";
+pub const MACOS_TRASH_REL: &str = ".Trash";

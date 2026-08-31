@@ -3,7 +3,6 @@
 use std::collections::HashSet;
 use std::fs;
 use std::io;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 
@@ -11,7 +10,7 @@ use crate::classify::classify;
 use crate::constants::PROGRESS_EVERY_ENTRIES;
 use crate::scan::skip::{is_special_path, skip_reason, SkipReason};
 use crate::scan::tree::{Node, ScanStats, Tree};
-use crate::size::used_from_blocks;
+use crate::sys;
 
 #[derive(Clone, Debug)]
 pub struct WalkOptions {
@@ -47,11 +46,7 @@ pub fn scan(path: &Path, opts: WalkOptions) -> Result<Tree, String> {
     scan_inner(path, opts, None)
 }
 
-pub fn scan_with_progress(
-    path: PathBuf,
-    opts: WalkOptions,
-    tx: Sender<WalkEvent>,
-) {
+pub fn scan_with_progress(path: PathBuf, opts: WalkOptions, tx: Sender<WalkEvent>) {
     match scan_inner(&path, opts, Some(&tx)) {
         Ok(tree) => {
             let _ = tx.send(WalkEvent::Done(Ok(tree)));
@@ -67,11 +62,12 @@ fn scan_inner(
     opts: WalkOptions,
     tx: Option<&Sender<WalkEvent>>,
 ) -> Result<Tree, String> {
-    let start = fs::symlink_metadata(path).map_err(|e| {
-        format!("cannot stat {}: {e}", path.display())
-    })?;
+    let start =
+        fs::symlink_metadata(path).map_err(|e| format!("cannot stat {}: {e}", path.display()))?;
 
-    let root_dev = opts.root_dev_override.unwrap_or_else(|| start.dev());
+    let root_dev = opts
+        .root_dev_override
+        .unwrap_or_else(|| sys::path_dev(path, &start));
     let mut tree = Tree {
         nodes: Vec::new(),
         root: 0,
@@ -97,14 +93,28 @@ fn scan_inner(
             let dir_path = tree.nodes[id].path.clone();
             let entries = read_children(&dir_path, &mut tree.stats);
             for (child_path, meta) in entries {
-                if let Some(reason) =
-                    skip_reason(&child_path, opts.one_file_system, root_dev, meta.dev())
-                {
+                if let Some(reason) = skip_reason(
+                    &child_path,
+                    opts.one_file_system,
+                    root_dev,
+                    sys::path_dev(&child_path, &meta),
+                ) {
                     match reason {
-                        SkipReason::Special => tree.stats.skipped_special += 1,
-                        SkipReason::OtherFilesystem => tree.stats.skipped_other_fs += 1,
+                        SkipReason::Special => {
+                            tree.stats.skipped_special += 1;
+                            continue;
+                        }
+                        SkipReason::OtherFilesystem if meta.is_dir() => {
+                            // Mount point: do not descend.
+                            tree.stats.skipped_other_fs += 1;
+                            continue;
+                        }
+                        SkipReason::OtherFilesystem => {
+                            // Regular file with a different st_dev — common on
+                            // overlayfs (Docker). Count it; there is nothing
+                            // to descend into.
+                        }
                     }
-                    continue;
                 }
 
                 let child_name = name_of(&child_path);
@@ -197,13 +207,15 @@ fn push_node(
     meta: &fs::Metadata,
 ) -> usize {
     let is_dir = meta.is_dir();
-    let mut own_used = used_from_blocks(meta.blocks());
-    let mut own_apparent = meta.size();
+    let mut own_used = sys::meta_used(meta);
+    let mut own_apparent = sys::meta_size(meta);
 
     if !is_dir {
         // Only multi-link inodes can repeat; tracking every file would cost
         // ~50 MB of set on a million-file scan for nothing.
-        if meta.nlink() > 1 && !seen.insert((meta.dev(), meta.ino())) {
+        let nlink = sys::meta_nlink(meta);
+        let ino = sys::meta_ino(meta);
+        if nlink > 1 && ino != 0 && !seen.insert((sys::path_dev(&path, meta), ino)) {
             own_used = 0;
             own_apparent = 0;
             tree.stats.hardlinks_deduped += 1;
@@ -230,7 +242,7 @@ fn push_node(
         own_apparent,
         used: own_used,
         apparent: own_apparent,
-        nlink: meta.nlink(),
+        nlink: sys::meta_nlink(meta),
     };
     let id = tree.nodes.len();
     tree.nodes.push(node);
@@ -241,7 +253,6 @@ fn push_node(
 mod tests {
     use super::*;
     use std::fs;
-    use std::os::unix::fs::MetadataExt;
     use tempfile::TempDir;
 
     fn write_file(path: &Path, bytes: usize) {
@@ -257,16 +268,8 @@ mod tests {
         write_file(&root.join("sub").join("b.bin"), 4000);
 
         let tree = scan(root, WalkOptions::default()).unwrap();
-        let a = tree
-            .nodes
-            .iter()
-            .find(|n| n.name == "a.bin")
-            .unwrap();
-        let b = tree
-            .nodes
-            .iter()
-            .find(|n| n.name == "b.bin")
-            .unwrap();
+        let a = tree.nodes.iter().find(|n| n.name == "a.bin").unwrap();
+        let b = tree.nodes.iter().find(|n| n.name == "b.bin").unwrap();
         let sub = tree.nodes.iter().find(|n| n.name == "sub").unwrap();
 
         assert_eq!(a.apparent, 1000);
@@ -319,14 +322,14 @@ mod tests {
         fs::create_dir(root.join("foreign")).unwrap();
         write_file(&root.join("foreign").join("y"), 100);
 
-        let real_dev = fs::metadata(root).unwrap().dev();
-        assert_ne!(real_dev, 0, "real device id should not be 0");
+        let real_dev = sys::path_dev(root, &fs::metadata(root).unwrap());
+        let fake_dev = if real_dev == 0 { 1 } else { 0 };
 
         let tree = scan(
             root,
             WalkOptions {
                 one_file_system: true,
-                root_dev_override: Some(0),
+                root_dev_override: Some(fake_dev),
             },
         )
         .unwrap();
@@ -348,13 +351,23 @@ mod tests {
         let root = tmp.path();
         fs::create_dir(root.join("real")).unwrap();
         write_file(&root.join("real").join("secret"), 2000);
+        #[cfg(unix)]
         std::os::unix::fs::symlink(root.join("real"), root.join("link")).unwrap();
+        #[cfg(windows)]
+        {
+            if std::os::windows::fs::symlink_dir(root.join("real"), root.join("link")).is_err() {
+                return;
+            }
+        }
 
         let tree = scan(root, WalkOptions::default()).unwrap();
         let link = tree.nodes.iter().find(|n| n.name == "link").unwrap();
         assert!(!link.is_dir);
         assert!(
-            !tree.nodes.iter().any(|n| n.name == "secret" && n.path.starts_with(root.join("link"))),
+            !tree
+                .nodes
+                .iter()
+                .any(|n| n.name == "secret" && n.path.starts_with(root.join("link"))),
             "must not walk through the symlink"
         );
     }

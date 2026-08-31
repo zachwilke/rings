@@ -8,8 +8,7 @@ use std::path::{Path, PathBuf};
 use crate::dto::{finding_rows, FindingRow};
 use crate::scan::Tree;
 
-pub const CSV_HEADER: &str =
-    "path,type,size_bytes,size_human,category,in_delete_collector";
+pub const CSV_HEADER: &str = "path,type,size_bytes,size_human,category,in_delete_collector";
 
 /// Write findings for `subtree` to `dest`. Uses a sibling temp file, then rename.
 pub fn write_csv(
@@ -50,10 +49,8 @@ pub fn render_csv(rows: &[FindingRow]) -> String {
 
 /// RFC 4180 quoting: wrap and double internal quotes when needed.
 pub fn csv_quote(field: &str) -> String {
-    let must_quote = field.contains(',')
-        || field.contains('"')
-        || field.contains('\n')
-        || field.contains('\r');
+    let must_quote =
+        field.contains(',') || field.contains('"') || field.contains('\n') || field.contains('\r');
     if !must_quote {
         return field.to_string();
     }
@@ -79,9 +76,8 @@ fn atomic_write(dest: &Path, bytes: &[u8]) -> Result<(), String> {
         .ok_or_else(|| "CSV path has no file name".to_string())?;
     let tmp = dir.join(format!(".{}.rings.tmp", name.to_string_lossy()));
     {
-        let mut f = fs::File::create(&tmp).map_err(|e| {
-            format!("cannot create temp CSV {}: {e}", tmp.display())
-        })?;
+        let mut f = fs::File::create(&tmp)
+            .map_err(|e| format!("cannot create temp CSV {}: {e}", tmp.display()))?;
         f.write_all(bytes).map_err(|e| e.to_string())?;
         f.sync_all().map_err(|e| e.to_string())?;
     }
