@@ -62,14 +62,14 @@ pub const DELETE_CONFIRM_PHRASE: &str = "DELETE";
 /// Default CSV filename written from the TUI.
 pub const TUI_EXPORT_FILENAME: &str = "rings-export.csv";
 
-/// Deepest ring count on a large panel.
-pub const SUNBURST_RINGS_MAX: usize = 8;
+/// Deepest ring count on a large panel. Braille 2×4 samples make thinner rings readable.
+pub const SUNBURST_RINGS_MAX: usize = 10;
 
 /// Floor so a tiny terminal does not turn the disk into noise.
 pub const SUNBURST_RINGS_MIN: usize = 4;
 
-/// Target half-block pixels of radial thickness per ring.
-pub const SUNBURST_RING_PX: f64 = 2.35;
+/// Target braille pixels (2×4 per cell) of radial thickness per ring.
+pub const SUNBURST_RING_PX: f64 = 3.8;
 
 /// Tightest inner hole, as a fraction of the outer radius.
 pub const SUNBURST_HOLE_MIN: f64 = 0.13;
@@ -77,11 +77,17 @@ pub const SUNBURST_HOLE_MIN: f64 = 0.13;
 /// Loosest inner hole (tiny panels still need a well for the size label).
 pub const SUNBURST_HOLE_MAX: f64 = 0.20;
 
-/// Half-block pixels reserved for the center size label.
-pub const SUNBURST_HOLE_LABEL_PX: f64 = 2.8;
+/// Braille pixels reserved for the center size label.
+pub const SUNBURST_HOLE_LABEL_PX: f64 = 5.6;
 
-/// Hair of empty cells around the disk so the edge does not clip.
-pub const SUNBURST_MARGIN: f64 = 0.55;
+/// Hair of empty pixels around the disk so the edge does not clip.
+pub const SUNBURST_MARGIN: f64 = 1.1;
+
+/// Footer rows: quiet stats, one chrome band, selected path.
+pub const FOOTER_H: u16 = 3;
+
+/// Empty cells between footer chips so they read as buttons, not a sentence.
+pub const CHIP_GAP: u16 = 2;
 
 /// Parent-relative floor; thinner children join "smaller objects".
 pub const MIN_SLICE_FRACTION: f64 = 0.0065;

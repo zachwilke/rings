@@ -9,6 +9,8 @@ pub const WARN: Rgb = Rgb(230, 176, 72);
 pub const DANGER: Rgb = Rgb(224, 88, 88);
 pub const SELECT_BG: Rgb = Rgb(36, 52, 80);
 pub const SMALLER: Rgb = Rgb(86, 92, 108);
+/// Footer chip face — distinct from BG so buttons read as buttons.
+pub const CHIP: Rgb = Rgb(34, 48, 74);
 
 pub const PALETTE: [Rgb; 10] = [
     Rgb(142, 214, 74),

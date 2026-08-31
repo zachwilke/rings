@@ -261,8 +261,8 @@ mod tests {
             screen.contains("? help"),
             "footer should hint ? help:\n{screen}"
         );
-        let has_block = screen.contains('█') || screen.contains('▀') || screen.contains('▄');
-        assert!(has_block, "sunburst should paint block cells:\n{screen}");
+        let has_dots = screen.chars().any(sunburst::is_braille);
+        assert!(has_dots, "sunburst should paint braille dots:\n{screen}");
         assert!(
             !hits.slices.is_empty(),
             "slices should exist for hit testing"
@@ -307,6 +307,89 @@ mod tests {
             .expect("quit button");
         handle_click(&mut app, &hits, quit.0.x, quit.0.y);
         assert!(app.quit, "clicking Quit should set quit");
+    }
+
+    #[test]
+    fn footer_chips_have_gaps_and_skip_hit_count() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.tree = Some(tree);
+        app.open_findings();
+
+        let mut buf = Buffer::new(100, 28, BG);
+        let hits = draw::draw(&mut buf, &app);
+        let screen = buf.text();
+
+        assert!(
+            screen.contains("Temp & cache"),
+            "findings header:\n{screen}"
+        );
+        assert!(
+            screen.contains("hits"),
+            "hit count belongs in the view header:\n{screen}"
+        );
+        assert!(
+            !screen.contains("temp/cache/log hits"),
+            "footer must not repeat the standing hit dump:\n{screen}"
+        );
+        assert!(
+            screen.contains("? help"),
+            "thin hint row still names ? help:\n{screen}"
+        );
+        let path = app.selected_path().expect("selected findings path");
+        assert!(
+            screen.contains(&path) || screen.contains(&draw::truncate(&path, 90)),
+            "selected path should sit on the last footer line:\n{screen}"
+        );
+
+        let mut edges: Vec<(u16, u16)> =
+            hits.buttons.iter().map(|(r, _)| (r.x, r.right())).collect();
+        edges.sort_by_key(|(x, _)| *x);
+        for pair in edges.windows(2) {
+            assert!(
+                pair[1].0 >= pair[0].1 + crate::constants::CHIP_GAP,
+                "chips need a gap, got {} then {} (gap {})",
+                pair[0].1,
+                pair[1].0,
+                pair[1].0.saturating_sub(pair[0].1)
+            );
+        }
+        assert!(
+            hits.buttons.iter().any(|(_, a)| *a == Action::Quit),
+            "Quit chip stays clickable"
+        );
+        assert!(
+            hits.buttons.iter().any(|(_, a)| *a == Action::Findings),
+            "Temp & cache chip stays clickable"
+        );
+    }
+
+    #[test]
+    fn narrow_footer_drops_export_before_quit() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.tree = Some(tree);
+        app.view = View::Browse;
+
+        let mut buf = Buffer::new(48, 20, BG);
+        let hits = draw::draw(&mut buf, &app);
+        let actions: Vec<Action> = hits.buttons.iter().map(|(_, a)| *a).collect();
+        assert!(
+            actions.contains(&Action::Quit),
+            "Quit is a keeper on a narrow row: {actions:?}"
+        );
+        assert!(
+            !actions.contains(&Action::Export),
+            "Export is first to drop when chips overflow: {actions:?}"
+        );
+        assert!(
+            actions.contains(&Action::Findings),
+            "Temp & cache stays: {actions:?}"
+        );
     }
 
     #[test]
@@ -397,8 +480,10 @@ mod tests {
     }
 
     fn write_ppm(buf: &Buffer, path: &std::path::Path, scale: u32) {
-        let w = buf.width as u32 * scale;
-        let h = buf.height as u32 * 2 * scale;
+        const COLS: u32 = 2;
+        const ROWS: u32 = 4;
+        let w = buf.width as u32 * COLS * scale;
+        let h = buf.height as u32 * ROWS * scale;
         let mut px = vec![0u8; (w * h * 3) as usize];
         for y in 0..buf.height {
             for x in 0..buf.width {
@@ -406,32 +491,21 @@ mod tests {
                     .get(x, y)
                     .cloned()
                     .unwrap_or(crate::term::Cell::blank(BG));
-                let (top, bot) = match cell.ch {
-                    '█' => (cell.fg, cell.fg),
-                    '▀' => (cell.fg, cell.bg),
-                    '▄' => (cell.bg, cell.fg),
-                    _ => (cell.bg, cell.bg),
-                };
-                for sy in 0..scale {
-                    for sx in 0..scale {
-                        let put = |px: &mut [u8], x: u32, y: u32, c: crate::term::Rgb| {
-                            let i = ((y * w + x) * 3) as usize;
-                            px[i] = c.0;
-                            px[i + 1] = c.1;
-                            px[i + 2] = c.2;
-                        };
-                        put(
-                            &mut px,
-                            x as u32 * scale + sx,
-                            y as u32 * 2 * scale + sy,
-                            top,
-                        );
-                        put(
-                            &mut px,
-                            x as u32 * scale + sx,
-                            y as u32 * 2 * scale + scale + sy,
-                            bot,
-                        );
+                let dots = sunburst::raster_cell(cell);
+                for row in 0..ROWS as usize {
+                    for col in 0..COLS as usize {
+                        for sy in 0..scale {
+                            for sx in 0..scale {
+                                let i = ((((y as u32 * ROWS + row as u32) * scale + sy) * w
+                                    + (x as u32 * COLS + col as u32) * scale
+                                    + sx)
+                                    * 3) as usize;
+                                let c = dots[row][col];
+                                px[i] = c.0;
+                                px[i + 1] = c.1;
+                                px[i + 2] = c.2;
+                            }
+                        }
                     }
                 }
             }
@@ -439,6 +513,24 @@ mod tests {
         let mut out = format!("P6\n{w} {h}\n255\n").into_bytes();
         out.extend(px);
         std::fs::write(path, out).unwrap();
+    }
+
+    fn dump_view_ppm(app: &App, stem: &str) -> (String, String) {
+        let mut buf = Buffer::new(100, 28, BG);
+        let hits = draw::draw(&mut buf, app);
+        let dir = std::env::temp_dir();
+        let ppm = dir.join(format!("rings-{stem}-current.ppm"));
+        write_ppm(&buf, &ppm, 3);
+        let text = dir.join(format!("rings-{stem}-current.txt"));
+        std::fs::write(&text, buf.text()).unwrap();
+        eprintln!(
+            "{stem} dump {} slices rings_for={} → {} and {}",
+            hits.slices.len(),
+            sunburst::rings_for(hits.sunburst),
+            ppm.display(),
+            text.display()
+        );
+        (buf.text(), text.display().to_string())
     }
 
     #[test]
@@ -450,21 +542,20 @@ mod tests {
         app.tree = Some(tree);
         app.view = View::Browse;
         app.selected = 1;
-
-        let mut buf = Buffer::new(100, 28, BG);
-        let hits = draw::draw(&mut buf, &app);
-        let path = std::env::temp_dir().join("rings-browse-current.ppm");
-        write_ppm(&buf, &path, 3);
-        let text = std::env::temp_dir().join("rings-browse-current.txt");
-        std::fs::write(&text, buf.text()).unwrap();
+        dump_view_ppm(&app, "browse");
+        app.open_findings();
+        dump_view_ppm(&app, "findings");
+        let mut wide = Buffer::new(140, 28, BG);
+        draw::draw(&mut wide, &app);
+        let wide_ppm = std::env::temp_dir().join("rings-findings-wide-current.ppm");
+        write_ppm(&wide, &wide_ppm, 3);
+        let wide_path = std::env::temp_dir().join("rings-findings-wide-current.txt");
+        std::fs::write(&wide_path, wide.text()).unwrap();
         eprintln!(
-            "browse dump {} slices rings_for={} → {} and {}",
-            hits.slices.len(),
-            sunburst::rings_for(hits.sunburst),
-            path.display(),
-            text.display()
+            "wide findings dump → {} and {}",
+            wide_ppm.display(),
+            wide_path.display()
         );
-        assert!(!hits.slices.is_empty());
     }
 
     #[test]
