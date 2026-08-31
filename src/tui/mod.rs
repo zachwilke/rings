@@ -7,19 +7,18 @@ pub mod theme;
 use std::path::PathBuf;
 use std::sync::mpsc;
 
-use crate::scan::{scan_with_progress, WalkEvent, WalkOptions};
-use crate::term::{self, Buffer, Event, Key, Term};
+use crate::scan::{spawn_scan, WalkEvent, WalkOptions};
+use crate::term::{self, Buffer, Event, Key, Rect, Term};
 
 use self::app::{Action, App, Hover, View};
-use self::draw::{row_index_at, HitMap};
+use self::draw::HitMap;
 
 const POLL_MS: i32 = 80;
 
 /// `path` is the scan root. `None` opens the directory picker at the current
 /// directory so `rings` alone browses before it walks.
 pub fn run(path: Option<PathBuf>, opts: WalkOptions, apparent: bool) -> Result<(), String> {
-    let start = path.clone().unwrap_or_else(|| PathBuf::from("."));
-    let mut app = App::new(start, apparent);
+    let mut app = App::new(PathBuf::from("."), apparent);
     match path {
         Some(p) => app.pending_scan = Some(p),
         None => app.open_picker(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
@@ -32,14 +31,7 @@ pub fn run(path: Option<PathBuf>, opts: WalkOptions, apparent: bool) -> Result<(
     result
 }
 
-fn spawn_scan(path: PathBuf, opts: WalkOptions) -> mpsc::Receiver<WalkEvent> {
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || scan_with_progress(path, opts, tx));
-    rx
-}
-
 fn event_loop(term: &Term, app: &mut App, opts: WalkOptions) -> Result<(), String> {
-    let th = theme::current();
     let mut prev: Option<Buffer> = None;
     let mut hits = HitMap::empty();
     let mut dirty = true;
@@ -59,7 +51,7 @@ fn event_loop(term: &Term, app: &mut App, opts: WalkOptions) -> Result<(), Strin
                     if !app.is_root {
                         app.status = crate::sys::not_privileged_status(tree.stats.errors);
                     }
-                    app.tree = Some(tree);
+                    app.set_tree(tree);
                     app.view = View::Browse;
                 }
                 WalkEvent::Done(Err(e)) => {
@@ -73,7 +65,7 @@ fn event_loop(term: &Term, app: &mut App, opts: WalkOptions) -> Result<(), Strin
             dirty = true;
         }
         if dirty {
-            let mut buf = Buffer::new(w, h, th.bg);
+            let mut buf = Buffer::new(w, h, theme::current().bg);
             hits = draw::draw(&mut buf, app);
             term::flush_diff(&buf, prev.as_ref()).map_err(|e| e.to_string())?;
             prev = Some(buf);
@@ -84,31 +76,51 @@ fn event_loop(term: &Term, app: &mut App, opts: WalkOptions) -> Result<(), Strin
             return Ok(());
         }
 
+        // Motion floods; only the last position matters, and only a change repaints.
+        let mut pointer = None;
         for ev in term::poll_event(POLL_MS) {
             match ev {
                 Event::Move { x, y } => {
-                    // Motion floods; only repaint when the hovered thing changes.
-                    let hover = hover_at(app, &hits, x, y);
-                    if hover != app.hover {
-                        app.hover = hover;
-                        dirty = true;
-                    }
+                    pointer = Some((x, y));
                     continue;
                 }
                 Event::Key(key) => handle_key(app, key),
                 Event::Click { x, y } => handle_click(app, &hits, x, y),
                 Event::RightClick { x, y } => handle_right_click(app, &hits, x, y),
-                Event::Wheel { delta, .. } => handle_wheel(app, delta),
+                Event::Wheel { delta } => handle_wheel(app, delta),
             }
             dirty = true;
             if app.quit {
                 return Ok(());
             }
         }
+        if let Some((x, y)) = pointer {
+            let hover = target_at(app, &hits, x, y);
+            if hover != app.hover {
+                app.hover = hover;
+                dirty = true;
+            }
+        }
         if matches!(app.view, View::Scanning) {
             dirty = true; // keep the spinner alive
         }
     }
+}
+
+/// Keys every list view shares: quit, help, and cursor movement.
+fn handle_common_key(app: &mut App, key: Key) -> bool {
+    match key {
+        Key::Char('q') => app.quit = true,
+        Key::Char('?') | Key::F1 => app.open_help(),
+        Key::Char('j') | Key::Down => app.move_sel(1),
+        Key::Char('k') | Key::Up => app.move_sel(-1),
+        Key::PageDown => app.move_sel(10),
+        Key::PageUp => app.move_sel(-10),
+        Key::Char('g') => app.move_sel(isize::MIN / 2),
+        Key::Char('G') => app.move_sel(isize::MAX / 2),
+        _ => return false,
+    }
+    true
 }
 
 fn handle_key(app: &mut App, key: Key) {
@@ -119,11 +131,6 @@ fn handle_key(app: &mut App, key: Key) {
             Key::Enter => app.menu_activate(),
             _ => app.close_menu(),
         }
-        return;
-    }
-
-    if matches!(app.view, View::Picker) {
-        handle_picker_key(app, key);
         return;
     }
 
@@ -148,15 +155,23 @@ fn handle_key(app: &mut App, key: Key) {
         return;
     }
 
+    if handle_common_key(app, key) {
+        return;
+    }
+
+    if matches!(app.view, View::Picker) {
+        // Vim-style browsing over the directory listing. `s` starts the scan.
+        match key {
+            Key::Enter | Key::Char('l') | Key::Right => app.picker_enter(),
+            Key::Char('h') | Key::Left | Key::Backspace => app.picker_up(),
+            Key::Char('s') => app.scan_picked(),
+            Key::Esc => app.resume_scan(),
+            _ => {}
+        }
+        return;
+    }
+
     match key {
-        Key::Char('q') => app.quit = true,
-        Key::Char('?') | Key::F1 => app.open_help(),
-        Key::Char('j') | Key::Down => app.move_sel(1),
-        Key::Char('k') | Key::Up => app.move_sel(-1),
-        Key::PageDown => app.move_sel(10),
-        Key::PageUp => app.move_sel(-10),
-        Key::Char('g') => app.move_sel(isize::MIN / 2),
-        Key::Char('G') => app.move_sel(isize::MAX / 2),
         Key::Enter => app.drill(),
         Key::Backspace | Key::Left | Key::Char('h') => go_back(app),
         Key::Char(' ') | Key::Char('d') => app.toggle_mark_selected(),
@@ -182,25 +197,6 @@ fn handle_key(app: &mut App, key: Key) {
     }
 }
 
-/// Vim-style movement over the directory listing. `s` starts the scan.
-fn handle_picker_key(app: &mut App, key: Key) {
-    match key {
-        Key::Char('q') => app.quit = true,
-        Key::Char('?') | Key::F1 => app.open_help(),
-        Key::Char('j') | Key::Down => app.picker_move(1),
-        Key::Char('k') | Key::Up => app.picker_move(-1),
-        Key::PageDown => app.picker_move(10),
-        Key::PageUp => app.picker_move(-10),
-        Key::Char('g') => app.picker_move(isize::MIN / 2),
-        Key::Char('G') => app.picker_move(isize::MAX / 2),
-        Key::Enter | Key::Char('l') | Key::Right => app.picker_enter(),
-        Key::Char('h') | Key::Left | Key::Backspace => app.picker_up(),
-        Key::Char('s') => app.scan_picked(),
-        Key::Esc => app.resume_scan(),
-        _ => {}
-    }
-}
-
 fn go_back(app: &mut App) {
     match app.view {
         View::Picker => app.picker_up(),
@@ -211,124 +207,68 @@ fn go_back(app: &mut App) {
 
 /// Wheel moves the cursor of whatever list is in view, like j/k.
 fn handle_wheel(app: &mut App, delta: i8) {
-    let delta = delta as isize;
     if app.menu.is_some() {
-        app.menu_move(delta);
-        return;
-    }
-    match app.view {
-        View::Picker => app.picker_move(delta),
-        View::Browse | View::Findings | View::Collector => app.move_sel(delta),
-        _ => {}
+        app.menu_move(delta as isize);
+    } else {
+        app.move_sel(delta as isize);
     }
 }
 
-/// What is under the pointer, without touching the selection.
-fn hover_at(app: &App, hits: &HitMap, x: u16, y: u16) -> Option<Hover> {
-    if app.menu.is_some() {
-        return hits
-            .menu
+/// What is under the pointer. One precedence walk serves hover, click, and
+/// right-click: an open menu takes everything, then buttons, breadcrumbs,
+/// slices, and list rows. Views that are not clickable simply record no
+/// targets, so a modal needs no special case here.
+fn target_at(app: &App, hits: &HitMap, x: u16, y: u16) -> Option<Hover> {
+    let find = |rects: &[(Rect, usize)]| {
+        rects
             .iter()
             .find(|(r, _)| r.contains(x, y))
-            .map(|(_, i)| Hover::Menu(*i));
+            .map(|(_, i)| *i)
+    };
+    if app.menu.is_some() {
+        return find(&hits.menu).map(Hover::Menu);
     }
     if let Some((_, a)) = hits.buttons.iter().find(|(r, _)| r.contains(x, y)) {
         return Some(Hover::Button(*a));
     }
-    if let Some((_, n)) = hits.crumbs.iter().find(|(r, _)| r.contains(x, y)) {
-        return Some(Hover::Crumb(*n));
+    if let Some(n) = find(&hits.crumbs) {
+        return Some(Hover::Crumb(n));
     }
-    let list_len = match app.view {
-        View::Picker => app.picker.as_ref()?.entries.len(),
-        View::Browse | View::Confirm { .. } => {
-            if let Some(slice) = sunburst::hit_slice(&hits.slices, hits.sunburst, x, y) {
-                return Some(Hover::Slice(slice.node));
-            }
-            app.current_children().len()
-        }
-        View::Findings => app.finding_ids().len(),
-        View::Collector => app.collector.len(),
-        _ => return None,
-    };
-    if !hits.list.contains(x, y) {
-        return None;
+    if let Some(slice) = sunburst::hit_slice(&hits.slices, hits.sunburst, x, y) {
+        return Some(Hover::Slice(slice.node));
     }
-    let offset = match app.view {
-        View::Picker => app.picker.as_ref()?.offset,
-        _ => app.list_offset,
-    };
-    row_index_at(hits.list, y, offset, list_len).map(Hover::Row)
+    find(&hits.rows).map(Hover::Row)
+}
+
+/// Move the selection to the slice or row under the cursor.
+fn select_target(app: &mut App, target: Hover) -> bool {
+    match target {
+        Hover::Slice(node) => app.focus_node(node),
+        Hover::Row(i) => app.select_row(i),
+        _ => return false,
+    }
+    true
 }
 
 /// Right-click selects what is under the cursor, then opens the menu there.
 fn handle_right_click(app: &mut App, hits: &HitMap, x: u16, y: u16) {
     app.close_menu();
-    if !select_at(app, hits, x, y) {
+    let Some(target) = target_at(app, hits, x, y) else {
         return;
-    }
-    app.open_menu(x, y);
-}
-
-/// Move the selection to the row or slice under the cursor. False when the
-/// cursor is not over anything selectable.
-fn select_at(app: &mut App, hits: &HitMap, x: u16, y: u16) -> bool {
-    match app.view {
-        View::Picker => {
-            let Some(picker) = app.picker.as_ref() else {
-                return false;
-            };
-            match row_index_at(hits.list, y, picker.offset, picker.entries.len()) {
-                Some(i) => {
-                    app.picker_select(i);
-                    true
-                }
-                None => false,
-            }
-        }
-        View::Browse | View::Confirm { .. } => {
-            if let Some(slice) = sunburst::hit_slice(&hits.slices, hits.sunburst, x, y) {
-                let node = slice.node;
-                app.focus_node(node);
-                return true;
-            }
-            match row_index_at(hits.list, y, app.list_offset, app.current_children().len()) {
-                Some(i) => {
-                    app.selected = i;
-                    true
-                }
-                None => false,
-            }
-        }
-        View::Findings => {
-            match row_index_at(hits.list, y, app.list_offset, app.finding_ids().len()) {
-                Some(i) => {
-                    app.findings_selected = i;
-                    true
-                }
-                None => false,
-            }
-        }
-        View::Collector => match row_index_at(hits.list, y, app.list_offset, app.collector.len()) {
-            Some(i) => {
-                app.selected = i;
-                true
-            }
-            None => false,
-        },
-        _ => false,
+    };
+    if select_target(app, target) {
+        app.open_menu(x, y);
     }
 }
 
 fn handle_click(app: &mut App, hits: &HitMap, x: u16, y: u16) {
     if app.menu.is_some() {
-        for (rect, index) in &hits.menu {
-            if rect.contains(x, y) {
-                app.menu_select(*index);
-                app.menu_activate();
-                return;
-            }
+        if let Some(Hover::Menu(i)) = target_at(app, hits, x, y) {
+            app.menu_select(i);
+            app.menu_activate();
+        } else {
+            app.close_menu();
         }
-        app.close_menu();
         return;
     }
     if matches!(app.view, View::Help) {
@@ -336,33 +276,22 @@ fn handle_click(app: &mut App, hits: &HitMap, x: u16, y: u16) {
         return;
     }
     let dbl = app.register_click(x, y);
-
-    for (rect, action) in &hits.buttons {
-        if rect.contains(x, y) {
-            do_action(app, *action);
-            return;
-        }
-    }
-    for (rect, nid) in &hits.crumbs {
-        if rect.contains(x, y) {
-            let target = *nid;
+    match target_at(app, hits, x, y) {
+        Some(Hover::Button(action)) => do_action(app, action),
+        Some(Hover::Crumb(target)) => {
             app.focus_node(target);
             if let Some(tree) = app.tree() {
                 if tree.get(target).is_dir && tree.node_at(&app.cwd) != target {
                     app.drill();
                 }
             }
-            return;
         }
-    }
-
-    if !select_at(app, hits, x, y) || !dbl {
-        return;
-    }
-    match app.view {
-        View::Picker => app.picker_enter(),
-        View::Browse | View::Findings | View::Confirm { .. } => app.drill(),
-        _ => {}
+        Some(target) => {
+            if select_target(app, target) && dbl {
+                app.drill();
+            }
+        }
+        None => {}
     }
 }
 
@@ -410,7 +339,7 @@ mod tests {
 
         let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
         let mut app = App::new(tmp.path().to_path_buf(), false);
-        app.tree = Some(tree);
+        app.set_tree(tree);
         app.view = View::Browse;
 
         let mut buf = Buffer::new(100, 28, th.bg);
@@ -452,7 +381,7 @@ mod tests {
         }
         let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
         let mut app = App::new(tmp.path().to_path_buf(), false);
-        app.tree = Some(tree);
+        app.set_tree(tree);
         app.view = View::Browse;
 
         let mut buf = Buffer::new(100, 28, th.bg);
@@ -486,7 +415,7 @@ mod tests {
         write_nested_fixture(tmp.path());
         let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
         let mut app = App::new(tmp.path().to_path_buf(), false);
-        app.tree = Some(tree);
+        app.set_tree(tree);
         app.open_findings();
 
         let mut buf = Buffer::new(100, 28, th.bg);
@@ -511,7 +440,7 @@ mod tests {
         );
         let path = app.selected_path().expect("selected findings path");
         assert!(
-            screen.contains(&path) || screen.contains(&draw::truncate(&path, 90)),
+            screen.contains(&path) || screen.contains(draw::truncate(&path, 90).as_ref()),
             "selected path should sit on the last footer line:\n{screen}"
         );
 
@@ -544,7 +473,7 @@ mod tests {
         write_nested_fixture(tmp.path());
         let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
         let mut app = App::new(tmp.path().to_path_buf(), false);
-        app.tree = Some(tree);
+        app.set_tree(tree);
         app.view = View::Browse;
 
         let mut buf = Buffer::new(48, 20, th.bg);
@@ -739,7 +668,7 @@ mod tests {
         write_nested_fixture(tmp.path());
         let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
         let mut app = App::new(tmp.path().to_path_buf(), false);
-        app.tree = Some(tree);
+        app.set_tree(tree);
         app.view = View::Browse;
 
         let mut buf = Buffer::new(100, 28, th.bg);
@@ -773,7 +702,7 @@ mod tests {
             .find(|(_, i)| {
                 matches!(
                     app.menu.as_ref().unwrap().items[*i].0,
-                    crate::tui::app::MenuAction::Mark
+                    crate::tui::app::MenuAction::ToggleMark
                 )
             })
             .expect("a Mark row")
@@ -794,7 +723,7 @@ mod tests {
         write_nested_fixture(tmp.path());
         let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
         let mut app = App::new(tmp.path().to_path_buf(), false);
-        app.tree = Some(tree);
+        app.set_tree(tree);
         app.view = View::Browse;
 
         let mut buf = Buffer::new(100, 28, th.bg);
@@ -834,7 +763,7 @@ mod tests {
         write_nested_fixture(tmp.path());
         let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
         let mut app = App::new(tmp.path().to_path_buf(), false);
-        app.tree = Some(tree);
+        app.set_tree(tree);
         app.view = View::Browse;
 
         let mut buf = Buffer::new(100, 28, th.bg);
@@ -879,7 +808,7 @@ mod tests {
         write_nested_fixture(tmp.path());
         let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
         let mut app = App::new(tmp.path().to_path_buf(), false);
-        app.tree = Some(tree);
+        app.set_tree(tree);
         app.view = View::Browse;
         app.drill(); // into the largest child
 
@@ -908,7 +837,7 @@ mod tests {
         write_nested_fixture(tmp.path());
         let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
         let mut app = App::new(tmp.path().to_path_buf(), false);
-        app.tree = Some(tree);
+        app.set_tree(tree);
         app.view = View::Browse;
         handle_key(&mut app, Key::Char('-'));
 
@@ -941,7 +870,7 @@ mod tests {
         write_nested_fixture(tmp.path());
         let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
         let mut app = App::new(tmp.path().to_path_buf(), false);
-        app.tree = Some(tree);
+        app.set_tree(tree);
         app.view = View::Browse;
 
         let mut buf = Buffer::new(100, 28, th.bg);
@@ -972,7 +901,7 @@ mod tests {
         assert_eq!(app.picker.as_ref().unwrap().selected, 1);
 
         let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
-        app.tree = Some(tree);
+        app.set_tree(tree);
         app.view = View::Browse;
         handle_wheel(&mut app, 1);
         assert_eq!(app.selected, 1, "browse list scrolls too");
@@ -985,20 +914,24 @@ mod tests {
         write_nested_fixture(tmp.path());
         let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
         let mut app = App::new(tmp.path().to_path_buf(), false);
-        app.tree = Some(tree);
+        app.set_tree(tree);
         app.view = View::Browse;
 
         let mut buf = Buffer::new(100, 28, th.bg);
         let hits = draw::draw(&mut buf, &app);
         let (hx, hy) = (hits.list.x + 3, hits.list.y + 2);
-        let hover = hover_at(&app, &hits, hx, hy);
+        let hover = target_at(&app, &hits, hx, hy);
         assert_eq!(hover, Some(Hover::Row(2)));
         app.hover = hover;
         assert_eq!(app.selected, 0, "hover never moves the selection");
 
         let mut buf = Buffer::new(100, 28, th.bg);
         draw::draw(&mut buf, &app);
-        assert_eq!(buf.get(hx, hy).unwrap().bg, th.hover_bg, "hovered row tint");
+        assert_eq!(
+            buf.get(hx, hy).unwrap().bg,
+            th.hover_bg(),
+            "hovered row tint"
+        );
         assert_eq!(
             buf.get(hx, hits.list.y).unwrap().bg,
             th.select_bg,
@@ -1006,7 +939,7 @@ mod tests {
         );
 
         // Outside every hit target there is nothing to hover.
-        assert_eq!(hover_at(&app, &hits, 0, hits.list.y + 20), None);
+        assert_eq!(target_at(&app, &hits, 0, hits.list.y + 20), None);
     }
 
     #[test]
@@ -1016,7 +949,7 @@ mod tests {
         write_nested_fixture(tmp.path());
         let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
         let mut app = App::new(tmp.path().to_path_buf(), false);
-        app.tree = Some(tree);
+        app.set_tree(tree);
         app.view = View::Browse;
 
         let mut buf = Buffer::new(100, 28, th.bg);
@@ -1042,7 +975,7 @@ mod tests {
         write_nested_fixture(tmp.path());
         let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
         let mut app = App::new(tmp.path().to_path_buf(), false);
-        app.tree = Some(tree);
+        app.set_tree(tree);
         app.view = View::Browse;
 
         let mut buf = Buffer::new(100, 28, th.bg);
@@ -1053,7 +986,7 @@ mod tests {
             .find(|(_, a)| *a == Action::Quit)
             .unwrap()
             .0;
-        app.hover = hover_at(&app, &hits, quit.x + 1, quit.y);
+        app.hover = target_at(&app, &hits, quit.x + 1, quit.y);
         assert_eq!(app.hover, Some(Hover::Button(Action::Quit)));
         let mut buf = Buffer::new(100, 28, th.bg);
         draw::draw(&mut buf, &app);
@@ -1063,7 +996,7 @@ mod tests {
         let mut buf = Buffer::new(100, 28, th.bg);
         let hits = draw::draw(&mut buf, &app);
         let row = hits.menu[1].0;
-        app.hover = hover_at(&app, &hits, row.x + 1, row.y);
+        app.hover = target_at(&app, &hits, row.x + 1, row.y);
         assert_eq!(app.hover, Some(Hover::Menu(1)));
     }
 
@@ -1076,7 +1009,7 @@ mod tests {
             theme::set(name).unwrap();
             let th = theme::current();
             let mut app = App::new(tmp.path().to_path_buf(), false);
-            app.tree = Some(tree.clone());
+            app.set_tree(tree.clone());
             app.view = View::Browse;
             let mut buf = Buffer::new(100, 28, th.bg);
             let hits = draw::draw(&mut buf, &app);
@@ -1084,6 +1017,150 @@ mod tests {
             assert!(buf.text().contains("usr"), "{name}: list");
         }
         theme::set("rings").unwrap();
+    }
+
+    #[test]
+    fn confirm_modal_swallows_clicks_that_miss_its_buttons() {
+        let th = theme::current();
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.set_tree(tree);
+        app.view = View::Browse;
+        app.toggle_mark_selected();
+        app.begin_confirm();
+        assert!(matches!(app.view, View::Confirm { .. }));
+
+        let mut buf = Buffer::new(100, 28, th.bg);
+        let hits = draw::draw(&mut buf, &app);
+        let before = (app.selected, app.cwd.clone());
+
+        // The typed-phrase box sits over the sunburst; clicking it must not
+        // select a slice, and double-clicking must not drill.
+        let cx = hits.sunburst.x + hits.sunburst.width / 2;
+        let cy = hits.sunburst.y + hits.sunburst.height / 2;
+        handle_click(&mut app, &hits, cx, cy);
+        handle_click(&mut app, &hits, cx, cy);
+        assert!(matches!(app.view, View::Confirm { .. }), "still confirming");
+        assert_eq!(
+            (app.selected, app.cwd.clone()),
+            before,
+            "nothing behind moved"
+        );
+
+        // Nor does the list, a breadcrumb, a right-click, or hover.
+        handle_click(&mut app, &hits, hits.list.x + 2, hits.list.y + 1);
+        assert_eq!(app.selected, before.0);
+        handle_right_click(&mut app, &hits, hits.list.x + 2, hits.list.y + 1);
+        assert!(app.menu.is_none(), "no context menu over a modal");
+        assert_eq!(target_at(&app, &hits, cx, cy), None);
+        assert_eq!(target_at(&app, &hits, hits.list.x + 2, hits.list.y), None);
+
+        // Its own buttons still work.
+        let cancel = hits
+            .buttons
+            .iter()
+            .find(|(_, a)| *a == Action::Cancel)
+            .unwrap()
+            .0;
+        assert_eq!(
+            target_at(&app, &hits, cancel.x, cancel.y),
+            Some(Hover::Button(Action::Cancel))
+        );
+        handle_click(&mut app, &hits, cancel.x, cancel.y);
+        assert_eq!(app.view, View::Collector, "Cancel returns to the collector");
+    }
+
+    #[test]
+    fn marking_explains_the_next_step() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.set_tree(tree);
+        app.view = View::Browse;
+
+        handle_key(&mut app, Key::Char(' '));
+        assert!(app.status.starts_with("marked usr ("), "{}", app.status);
+        assert!(app.status.contains("1 in collector"), "{}", app.status);
+        assert!(app.status.contains("c review · x delete"), "{}", app.status);
+
+        handle_key(&mut app, Key::Char(' '));
+        assert!(app.status.starts_with("unmarked usr"), "{}", app.status);
+        assert!(app.status.contains("0 in collector"), "{}", app.status);
+    }
+
+    #[test]
+    fn context_menu_delete_names_what_else_is_already_marked() {
+        let th = theme::current();
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.set_tree(tree);
+        app.view = View::Browse;
+        let mut buf = Buffer::new(100, 28, th.bg);
+        let hits = draw::draw(&mut buf, &app);
+
+        let label = |app: &App| {
+            app.menu
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .find(|(a, _)| *a == crate::tui::app::MenuAction::Delete)
+                .unwrap()
+                .1
+                .clone()
+        };
+        handle_right_click(&mut app, &hits, hits.list.x + 3, hits.list.y);
+        assert_eq!(label(&app), "Delete directory…", "nothing else staged");
+        app.close_menu();
+
+        app.toggle_mark_selected(); // stage row 0
+        handle_right_click(&mut app, &hits, hits.list.x + 3, hits.list.y + 1);
+        assert_eq!(
+            label(&app),
+            "Delete directory… (with 1 already marked)",
+            "row 1's menu counts row 0"
+        );
+        app.close_menu();
+
+        handle_right_click(&mut app, &hits, hits.list.x + 3, hits.list.y);
+        assert_eq!(
+            label(&app),
+            "Delete directory…",
+            "the marked item itself is not 'already marked' besides itself"
+        );
+    }
+
+    #[test]
+    fn picker_over_a_scan_warns_about_staged_marks() {
+        let th = theme::current();
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.set_tree(tree);
+        app.view = View::Browse;
+
+        handle_key(&mut app, Key::Char('-'));
+        assert_eq!(app.picker_marks_warning(), None, "no marks, no warning");
+
+        handle_key(&mut app, Key::Esc);
+        app.toggle_mark_selected();
+        handle_key(&mut app, Key::Char('-'));
+        let warning = app.picker_marks_warning().expect("warning with marks");
+        assert!(warning.starts_with("1 marked item ("), "{warning}");
+        assert!(warning.contains("Esc keeps them"), "{warning}");
+        let mut buf = Buffer::new(100, 28, th.bg);
+        draw::draw(&mut buf, &app);
+        assert!(
+            buf.text().contains("dropped by a new scan"),
+            "{}",
+            buf.text()
+        );
     }
 
     fn write_nested_fixture(root: &std::path::Path) {
@@ -1194,7 +1271,7 @@ mod tests {
         write_nested_fixture(tmp.path());
         let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
         let mut app = App::new(tmp.path().to_path_buf(), false);
-        app.tree = Some(tree);
+        app.set_tree(tree);
         app.view = View::Browse;
         app.selected = 1;
         dump_view_ppm(&app, "browse");

@@ -1,4 +1,6 @@
-use crate::cli::{key_column_width, KEY_GROUPS};
+use std::borrow::Cow;
+
+use crate::cli::{KeyGroup, HELP_COL_W, HELP_KEY_W, KEY_GROUPS};
 use crate::constants::{CHIP_GAP, DELETE_CONFIRM_PHRASE, FOOTER_H};
 use crate::delete::needs_typed_confirm;
 use crate::logo;
@@ -14,6 +16,8 @@ pub struct HitMap {
     pub buttons: Vec<(Rect, Action)>,
     pub crumbs: Vec<(Rect, usize)>,
     pub slices: Vec<Slice>,
+    /// Visible list rows, by index into the list in view.
+    pub rows: Vec<(Rect, usize)>,
     /// Context-menu rows, by item index.
     pub menu: Vec<(Rect, usize)>,
 }
@@ -26,6 +30,7 @@ impl HitMap {
             buttons: Vec::new(),
             crumbs: Vec::new(),
             slices: Vec::new(),
+            rows: Vec::new(),
             menu: Vec::new(),
         }
     }
@@ -42,7 +47,9 @@ pub fn draw(buf: &mut Buffer, app: &App) -> HitMap {
         }
         View::Help => draw_help(buf),
         View::Confirm { .. } => {
-            let mut hits = draw_main(buf, app);
+            // The modal covers the view: only its own buttons are targets.
+            draw_main(buf, app);
+            let mut hits = HitMap::empty();
             draw_confirm_modal(buf, app, &mut hits);
             hits
         }
@@ -79,15 +86,13 @@ fn draw_menu(buf: &mut Buffer, menu: &Menu, hover: Option<Hover>, hits: &mut Hit
         }
         let sel = i == menu.selected;
         let row_bg = row_background(th, sel, hover == Some(Hover::Menu(i)));
-        buf.fill(
-            Rect {
-                x: inner.x,
-                y,
-                width: inner.width,
-                height: 1,
-            },
-            row_bg,
-        );
+        let rect = Rect {
+            x: inner.x,
+            y,
+            width: inner.width,
+            height: 1,
+        };
+        buf.fill(rect, row_bg);
         let fg = match action {
             MenuAction::Delete => th.danger,
             MenuAction::Cancel => th.muted,
@@ -95,15 +100,7 @@ fn draw_menu(buf: &mut Buffer, menu: &Menu, hover: Option<Hover>, hits: &mut Hit
         };
         let text = truncate(label, inner.width.saturating_sub(2) as usize);
         buf.print_styled(inner.x + 1, y, &text, fg, row_bg, sel);
-        hits.menu.push((
-            Rect {
-                x: inner.x,
-                y,
-                width: inner.width,
-                height: 1,
-            },
-            i,
-        ));
+        hits.menu.push((rect, i));
     }
 }
 
@@ -164,9 +161,15 @@ fn draw_scan(buf: &mut Buffer, app: &App) {
     buf.print(hx, y, hint, th.muted, th.bg);
 }
 
-fn draw_picker(buf: &mut Buffer, app: &App) -> HitMap {
-    let th = theme::current();
+/// Header row, body, and footer band of the standard screen.
+fn frame(buf: &Buffer) -> (Rect, Rect, Rect) {
     let footer_h = FOOTER_H.min(buf.height);
+    let header = Rect {
+        x: 0,
+        y: 0,
+        width: buf.width,
+        height: 1,
+    };
     let body = Rect {
         x: 0,
         y: 1,
@@ -179,29 +182,32 @@ fn draw_picker(buf: &mut Buffer, app: &App) -> HitMap {
         width: buf.width,
         height: footer_h,
     };
+    (header, body, footer)
+}
+
+fn draw_picker(buf: &mut Buffer, app: &App) -> HitMap {
+    let th = theme::current();
+    let (_, body, footer) = frame(buf);
+    let mut hits = HitMap::empty();
+    hits.buttons = draw_footer(buf, app, footer);
+    let Some(picker) = app.picker.as_ref() else {
+        return hits;
+    };
 
     let x = buf.print_styled(1, 0, "◎ rings ", th.text, th.bg, true);
-    let dir = app
-        .picker
-        .as_ref()
-        .map(|p| p.dir.display().to_string())
-        .unwrap_or_default();
     buf.print(
         x,
         0,
-        &truncate(&dir, buf.width.saturating_sub(x + 1) as usize),
+        &truncate(
+            &picker.dir.to_string_lossy(),
+            buf.width.saturating_sub(x + 1) as usize,
+        ),
         th.accent,
         th.bg,
     );
 
     let inner = draw_box(buf, body, " Pick a directory to scan ", th.accent, th.muted);
-    let mut hits = HitMap::empty();
     hits.list = inner;
-    hits.buttons = draw_footer(buf, app, footer);
-
-    let Some(picker) = app.picker.as_ref() else {
-        return hits;
-    };
     if picker.entries.is_empty() {
         buf.print(
             inner.x + 1,
@@ -225,59 +231,29 @@ fn draw_picker(buf: &mut Buffer, app: &App) -> HitMap {
     {
         let y = inner.y + row as u16;
         let sel = i == picker.selected;
-        let row_bg = row_background(th, sel, app.hovered_row(i));
-        if row_bg != th.bg {
-            buf.fill(
-                Rect {
-                    x: inner.x,
-                    y,
-                    width: inner.width,
-                    height: 1,
-                },
-                row_bg,
-            );
-        }
-        let (glyph, color) = if entry.is_dir {
-            ("▸", th.accent)
+        let row_bg = list_row(buf, &mut hits, inner, y, i, sel, app.hovered_row(i));
+        let (glyph, color, fg) = if entry.is_dir {
+            ("▸", th.accent, th.text)
         } else {
-            ("·", th.smaller)
-        };
-        let name = if entry.is_dir {
-            format!("{}/", entry.name)
-        } else {
-            entry.name.clone()
+            ("·", th.smaller, th.muted)
         };
         let mut x = buf.print(inner.x, y, " ", color, row_bg);
         x = buf.print(x, y, glyph, color, row_bg);
         x = buf.print(x, y, " ", color, row_bg);
         let name_w = inner.right().saturating_sub(x + 1) as usize;
-        let fg = if entry.is_dir { th.text } else { th.muted };
-        buf.print_styled(x, y, &truncate(&name, name_w), fg, row_bg, sel);
+        if entry.is_dir {
+            let shown = truncate(&entry.name, name_w.saturating_sub(1));
+            let x = buf.print_styled(x, y, &shown, fg, row_bg, sel);
+            buf.print(x, y, "/", fg, row_bg);
+        } else {
+            buf.print_styled(x, y, &truncate(&entry.name, name_w), fg, row_bg, sel);
+        }
     }
     hits
 }
 
 fn draw_main(buf: &mut Buffer, app: &App) -> HitMap {
-    let header = Rect {
-        x: 0,
-        y: 0,
-        width: buf.width,
-        height: 1,
-    };
-    let footer_h = FOOTER_H.min(buf.height);
-    let body = Rect {
-        x: 0,
-        y: 1,
-        width: buf.width,
-        height: buf.height.saturating_sub(1 + footer_h),
-    };
-    let footer = Rect {
-        x: 0,
-        y: buf.height.saturating_sub(footer_h),
-        width: buf.width,
-        height: footer_h,
-    };
-
+    let (header, body, footer) = frame(buf);
     let crumbs = draw_header(buf, app, header);
     let mut hits = HitMap {
         sunburst: Rect::ZERO,
@@ -285,6 +261,7 @@ fn draw_main(buf: &mut Buffer, app: &App) -> HitMap {
         buttons: Vec::new(),
         crumbs,
         slices: Vec::new(),
+        rows: Vec::new(),
         menu: Vec::new(),
     };
 
@@ -380,10 +357,10 @@ fn draw_browse(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
     for y in right.y..right.bottom() {
         buf.print(right.x, y, "│", th.muted, th.bg);
     }
-    draw_child_list(buf, app, hits.list);
+    draw_child_list(buf, app, hits.list, hits);
 }
 
-fn draw_child_list(buf: &mut Buffer, app: &App, area: Rect) {
+fn draw_child_list(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
     let th = theme::current();
     let Some(tree) = app.tree() else {
         return;
@@ -400,18 +377,7 @@ fn draw_child_list(buf: &mut Buffer, app: &App, area: Rect) {
         let y = area.y + row as u16;
         let n = tree.get(cid);
         let sel = i == app.selected;
-        let row_bg = row_background(th, sel, app.hovered_row(i));
-        if row_bg != th.bg {
-            buf.fill(
-                Rect {
-                    x: area.x,
-                    y,
-                    width: area.width,
-                    height: 1,
-                },
-                row_bg,
-            );
-        }
+        let row_bg = list_row(buf, hits, area, y, i, sel, app.hovered_row(i));
         let color = if n.category.is_waste() {
             category_color(n.category)
         } else {
@@ -465,18 +431,7 @@ fn draw_findings(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
         let y = inner.y + row as u16;
         let n = tree.get(id);
         let sel = i == app.findings_selected;
-        let row_bg = row_background(th, sel, app.hovered_row(i));
-        if row_bg != th.bg {
-            buf.fill(
-                Rect {
-                    x: inner.x,
-                    y,
-                    width: inner.width,
-                    height: 1,
-                },
-                row_bg,
-            );
-        }
+        let row_bg = list_row(buf, hits, inner, y, i, sel, app.hovered_row(i));
         let color = category_color(n.category);
         let marked = if app.collector.contains_path(&n.path) {
             "●"
@@ -488,8 +443,8 @@ fn draw_findings(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
         let mut x = buf.print(inner.x, y, &format!(" {marked} "), color, row_bg);
         x = buf.print(x, y, &format!("{:<8}", n.category.label()), color, row_bg);
         let path_w = inner.width.saturating_sub(x - inner.x + size_w + 1) as usize;
-        let path = truncate(&n.path.to_string_lossy(), path_w);
-        buf.print_styled(x, y, &path, th.text, row_bg, sel);
+        let raw = n.path.to_string_lossy();
+        buf.print_styled(x, y, &truncate(&raw, path_w), th.text, row_bg, sel);
         buf.print(
             inner.right().saturating_sub(size_w),
             y,
@@ -534,24 +489,13 @@ fn draw_collector(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
     {
         let y = inner.y + row as u16;
         let sel = i == app.selected;
-        let row_bg = row_background(th, sel, app.hovered_row(i));
-        if row_bg != th.bg {
-            buf.fill(
-                Rect {
-                    x: inner.x,
-                    y,
-                    width: inner.width,
-                    height: 1,
-                },
-                row_bg,
-            );
-        }
+        let row_bg = list_row(buf, hits, inner, y, i, sel, app.hovered_row(i));
         let size = human_bytes(item.size_bytes);
         let size_w = size.chars().count() as u16 + 1;
         let x = buf.print(inner.x, y, " ● ", th.danger, row_bg);
         let path_w = inner.width.saturating_sub(3 + size_w + 1) as usize;
-        let path = truncate(&item.path.to_string_lossy(), path_w);
-        buf.print_styled(x, y, &path, th.text, row_bg, sel);
+        let raw = item.path.to_string_lossy();
+        buf.print_styled(x, y, &truncate(&raw, path_w), th.text, row_bg, sel);
         buf.print(
             inner.right().saturating_sub(size_w),
             y,
@@ -581,7 +525,7 @@ fn draw_footer(buf: &mut Buffer, app: &App, area: Rect) -> Vec<(Rect, Action)> {
 fn draw_footer_stats(buf: &mut Buffer, app: &App, y: u16, width: u16) {
     let th = theme::current();
     if let (View::Picker, Some(picker)) = (&app.view, app.picker.as_ref()) {
-        let dirs = picker.entries.iter().filter(|e| e.is_dir).count();
+        let dirs = picker.dir_count();
         let x = buf.print(
             1,
             y,
@@ -593,11 +537,13 @@ fn draw_footer_stats(buf: &mut Buffer, app: &App, y: u16, width: u16) {
             th.muted,
             th.bg,
         );
-        let target = picker.scan_target().display().to_string();
         buf.print_styled(
             x,
             y,
-            &truncate(&target, width.saturating_sub(x + 1) as usize),
+            &truncate(
+                &picker.scan_target().to_string_lossy(),
+                width.saturating_sub(x + 1) as usize,
+            ),
             th.text,
             th.bg,
             true,
@@ -874,12 +820,14 @@ fn draw_hints(buf: &mut Buffer, mut x: u16, y: u16, hints: &[(&str, &str)]) {
 
 fn draw_footer_path(buf: &mut Buffer, app: &App, y: u16, width: u16) {
     let th = theme::current();
-    let line = if !app.status.is_empty() {
-        app.status.clone()
+    let (line, color) = if !app.status.is_empty() {
+        (app.status.clone(), th.muted)
     } else if let Some(tip) = app.hover_line() {
-        tip
+        (tip, th.muted)
+    } else if let Some(warning) = app.picker_marks_warning() {
+        (warning, th.warn)
     } else {
-        app.selected_path().unwrap_or_default()
+        (app.selected_path().unwrap_or_default(), th.muted)
     };
     if line.is_empty() {
         return;
@@ -888,7 +836,7 @@ fn draw_footer_path(buf: &mut Buffer, app: &App, y: u16, width: u16) {
         1,
         y,
         &truncate(&line, width.saturating_sub(2) as usize),
-        th.muted,
+        color,
         th.bg,
     );
 }
@@ -961,29 +909,41 @@ fn draw_confirm_modal(buf: &mut Buffer, app: &App, hits: &mut HitMap) {
     hits.buttons.push((ok, Action::ConfirmDelete));
 }
 
-/// One row of the help block.
-enum HelpLine {
-    Title(&'static str),
-    Key(&'static str, &'static str),
-    Note(&'static str),
-    Blank,
+/// Rows a group takes: title, keys, optional note.
+fn group_height(g: &KeyGroup) -> u16 {
+    1 + g.keys.len() as u16 + u16::from(g.note.is_some())
 }
 
-fn help_column(groups: &[&crate::cli::KeyGroup]) -> Vec<HelpLine> {
-    let mut lines = Vec::new();
-    for (i, g) in groups.iter().enumerate() {
-        if i > 0 {
-            lines.push(HelpLine::Blank);
+/// Rows a column of groups takes, with a blank line between groups.
+fn column_height(groups: &[KeyGroup]) -> u16 {
+    groups.iter().map(group_height).sum::<u16>() + groups.len().saturating_sub(1) as u16
+}
+
+/// Paint one group at `(x, y)`, clipped to `bottom`. Returns rows used.
+fn draw_group(buf: &mut Buffer, x: u16, y: u16, bottom: u16, g: &KeyGroup) -> u16 {
+    let th = theme::current();
+    let mut ly = y;
+    let mut line = |buf: &mut Buffer, f: &mut dyn FnMut(&mut Buffer, u16)| {
+        if ly < bottom {
+            f(buf, ly);
         }
-        lines.push(HelpLine::Title(g.title));
-        for (k, d) in g.keys {
-            lines.push(HelpLine::Key(k, d));
-        }
-        if let Some(n) = g.note {
-            lines.push(HelpLine::Note(n));
-        }
+        ly += 1;
+    };
+    line(buf, &mut |buf, ly| {
+        buf.print_styled(x, ly, g.title, th.accent, th.bg, true);
+    });
+    for (k, d) in g.keys {
+        line(buf, &mut |buf, ly| {
+            buf.print_styled(x, ly, k, th.warn, th.bg, true);
+            buf.print(x + HELP_KEY_W as u16 + 2, ly, d, th.text, th.bg);
+        });
     }
-    lines
+    if let Some(n) = g.note {
+        line(buf, &mut |buf, ly| {
+            buf.print(x, ly, &truncate(n, HELP_COL_W), th.muted, th.bg);
+        });
+    }
+    ly - y
 }
 
 /// Titled groups in two centered columns (one when narrow), the logo above
@@ -999,31 +959,24 @@ fn draw_help(buf: &mut Buffer) -> HitMap {
     buf.fill(rect, th.bg);
     let inner = draw_box(buf, rect, " keys ", th.accent, th.accent);
 
-    let key_w = key_column_width() as u16;
-    let desc_w = 22u16;
-    let col_w = key_w + 2 + desc_w;
-    let groups: Vec<&crate::cli::KeyGroup> = KEY_GROUPS.iter().collect();
+    let col_w = HELP_COL_W as u16;
     let gap = if inner.width >= col_w * 2 + 6 { 4 } else { 2 };
     let two_col = inner.width >= col_w * 2 + gap + 2;
-    let (left, right) = if two_col {
-        // Split where the taller column is shortest.
-        let split = (1..groups.len())
-            .min_by_key(|&i| {
-                help_column(&groups[..i])
-                    .len()
-                    .max(help_column(&groups[i..]).len())
-            })
-            .unwrap_or(1);
-        (help_column(&groups[..split]), help_column(&groups[split..]))
+    // Split where the taller column is shortest.
+    let split = if two_col {
+        (1..KEY_GROUPS.len())
+            .min_by_key(|&i| column_height(&KEY_GROUPS[..i]).max(column_height(&KEY_GROUPS[i..])))
+            .unwrap_or(1)
     } else {
-        (help_column(&groups), Vec::new())
+        KEY_GROUPS.len()
     };
-    let rows = left.len().max(right.len()) as u16;
+    let (left, right) = KEY_GROUPS.split_at(split);
+    let rows = column_height(left).max(column_height(right));
     let block_w = if two_col { col_w * 2 + gap } else { col_w };
 
     let (lw, lh) = logo::size();
     let footer_h = 2u16; // blank + close row
-    let show_logo = inner.height >= rows + footer_h + lh + 1;
+    let show_logo = inner.height > rows + footer_h + lh;
     let block_h = rows + footer_h + if show_logo { lh + 1 } else { 0 };
     let mut y = inner.y + inner.height.saturating_sub(block_h) / 2;
     let x0 = inner.x + inner.width.saturating_sub(block_w) / 2;
@@ -1033,26 +986,13 @@ fn draw_help(buf: &mut Buffer) -> HitMap {
         y += lh + 1;
     }
 
-    let columns: [(u16, &[HelpLine]); 2] = [(x0, &left), (x0 + col_w + gap, &right)];
-    for (cx, lines) in columns {
-        for (i, line) in lines.iter().enumerate() {
-            let ly = y + i as u16;
-            if ly >= inner.bottom() {
-                break;
+    for (cx, groups) in [(x0, left), (x0 + col_w + gap, right)] {
+        let mut ly = y;
+        for (i, g) in groups.iter().enumerate() {
+            if i > 0 {
+                ly += 1;
             }
-            match line {
-                HelpLine::Title(t) => {
-                    buf.print_styled(cx, ly, t, th.accent, th.bg, true);
-                }
-                HelpLine::Key(k, d) => {
-                    buf.print_styled(cx, ly, k, th.warn, th.bg, true);
-                    buf.print(cx + key_w + 2, ly, d, th.text, th.bg);
-                }
-                HelpLine::Note(n) => {
-                    buf.print(cx, ly, &truncate(n, col_w as usize), th.muted, th.bg);
-                }
-                HelpLine::Blank => {}
-            }
+            ly += draw_group(buf, cx, ly, inner.bottom(), g);
         }
     }
 
@@ -1154,41 +1094,56 @@ fn draw_box(buf: &mut Buffer, area: Rect, title: &str, title_fg: Rgb, border: Rg
     }
 }
 
+/// Tint one list row (selection beats hover, hover is a whisper of it) and
+/// register it for hit testing.
+fn list_row(
+    buf: &mut Buffer,
+    hits: &mut HitMap,
+    area: Rect,
+    y: u16,
+    index: usize,
+    selected: bool,
+    hovered: bool,
+) -> Rgb {
+    let th = theme::current();
+    let bg = row_background(th, selected, hovered);
+    let rect = Rect {
+        x: area.x,
+        y,
+        width: area.width,
+        height: 1,
+    };
+    if bg != th.bg {
+        buf.fill(rect, bg);
+    }
+    hits.rows.push((rect, index));
+    bg
+}
+
 /// Selection beats hover; hover is a whisper of the selection color.
 fn row_background(th: &theme::Theme, selected: bool, hovered: bool) -> Rgb {
     if selected {
         th.select_bg
     } else if hovered {
-        th.hover_bg
+        th.hover_bg()
     } else {
         th.bg
     }
 }
 
-pub fn truncate(s: &str, max: usize) -> String {
+/// Clip to `max` cells with an ellipsis. Borrows when it already fits, which
+/// is the common case on every list row.
+pub fn truncate(s: &str, max: usize) -> Cow<'_, str> {
     if max == 0 {
-        return String::new();
+        return Cow::Borrowed("");
     }
-    let count = s.chars().count();
-    if count <= max {
-        return s.to_string();
+    if s.chars().count() <= max {
+        return Cow::Borrowed(s);
     }
     if max <= 1 {
-        return "…".into();
+        return Cow::Borrowed("…");
     }
     let mut out: String = s.chars().take(max - 1).collect();
     out.push('…');
-    out
-}
-
-pub fn row_index_at(list: Rect, y: u16, offset: usize, len: usize) -> Option<usize> {
-    if y < list.y || y >= list.bottom() {
-        return None;
-    }
-    let row = (y - list.y) as usize + offset;
-    if row < len {
-        Some(row)
-    } else {
-        None
-    }
+    Cow::Owned(out)
 }

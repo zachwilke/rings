@@ -13,8 +13,8 @@ pub struct KeyGroup {
     pub note: Option<&'static str>,
 }
 
-/// Keys stay within 13 columns, descriptions and notes within 22 and 37,
-/// so two groups sit side by side with a margin on an 80-column terminal.
+/// Keys stay within `HELP_KEY_W`, descriptions within `HELP_DESC_W`, and
+/// notes within `HELP_COL_W`; the test below holds the table to it.
 pub const KEY_GROUPS: &[KeyGroup] = &[
     KeyGroup {
         title: "Navigate",
@@ -70,15 +70,11 @@ pub const KEY_GROUPS: &[KeyGroup] = &[
     },
 ];
 
-/// Widest key label across every group.
-pub fn key_column_width() -> usize {
-    KEY_GROUPS
-        .iter()
-        .flat_map(|g| g.keys.iter())
-        .map(|(k, _)| k.chars().count())
-        .max()
-        .unwrap_or(0)
-}
+/// Help overlay geometry: key caps, descriptions, and the column they make.
+/// Two columns plus a 2-cell gap fit inside an 80-column box with a margin.
+pub const HELP_KEY_W: usize = 13;
+pub const HELP_DESC_W: usize = 22;
+pub const HELP_COL_W: usize = HELP_KEY_W + 2 + HELP_DESC_W;
 
 const USAGE: &str = "\
 rings — disk usage sunburst for Linux, macOS, and Windows
@@ -143,7 +139,6 @@ pub fn help_text() -> String {
     }
     out.push('\n');
     out.push_str(USAGE);
-    let kw = key_column_width();
     for (i, group) in KEY_GROUPS.iter().enumerate() {
         if i > 0 {
             out.push('\n');
@@ -152,7 +147,7 @@ pub fn help_text() -> String {
         out.push_str(&group.title.to_ascii_uppercase());
         out.push('\n');
         for (key, desc) in group.keys {
-            let pad = kw.saturating_sub(key.chars().count());
+            let pad = HELP_KEY_W.saturating_sub(key.chars().count());
             out.push_str(&format!("    {key}{}  {desc}\n", " ".repeat(pad)));
         }
         if let Some(note) = group.note {
@@ -346,13 +341,17 @@ mod tests {
 
     #[test]
     fn key_table_fits_two_columns_on_eighty_cols() {
+        assert!(
+            2 * HELP_COL_W + 2 + 2 <= 78,
+            "two columns, a tight gap, and a margin must fit an 80-col box"
+        );
         for group in KEY_GROUPS {
             for (key, desc) in group.keys {
-                assert!(key.chars().count() <= 13, "{key:?} is too wide");
-                assert!(desc.chars().count() <= 22, "{desc:?} is too wide");
+                assert!(key.chars().count() <= HELP_KEY_W, "{key:?} is too wide");
+                assert!(desc.chars().count() <= HELP_DESC_W, "{desc:?} is too wide");
             }
             if let Some(note) = group.note {
-                assert!(note.chars().count() <= 37, "{note:?} is too wide");
+                assert!(note.chars().count() <= HELP_COL_W, "{note:?} is too wide");
             }
         }
     }

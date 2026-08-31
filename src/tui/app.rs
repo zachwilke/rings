@@ -58,8 +58,7 @@ pub enum Hover {
 pub enum MenuAction {
     Open,
     ScanHere,
-    Mark,
-    Unmark,
+    ToggleMark,
     Delete,
     Cancel,
 }
@@ -72,6 +71,36 @@ pub struct Menu {
     pub title: String,
     pub items: Vec<(MenuAction, String)>,
     pub selected: usize,
+}
+
+/// Cursor arithmetic shared by every list: clamp `i + delta` into `0..len`.
+pub fn step(i: usize, delta: isize, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    (i as isize)
+        .saturating_add(delta)
+        .clamp(0, len as isize - 1) as usize
+}
+
+/// Smallest scroll change that keeps `sel` inside a `page`-row window.
+pub fn scroll_to_show(sel: usize, offset: usize, page: usize) -> usize {
+    if sel < offset {
+        sel
+    } else if sel >= offset + page {
+        sel.saturating_sub(page.saturating_sub(1))
+    } else {
+        offset
+    }
+}
+
+/// Display name: the root shows as `/`, everything else by basename.
+pub fn node_label(n: &crate::scan::Node) -> String {
+    if n.path.as_os_str() == Path::new("/").as_os_str() {
+        "/".to_string()
+    } else {
+        n.name.clone()
+    }
 }
 
 impl Menu {
@@ -94,6 +123,8 @@ impl Menu {
 
 pub struct App {
     pub tree: Option<Tree>,
+    /// Waste hits of `tree`, largest first. Computed once per tree.
+    pub findings: Vec<usize>,
     pub cwd: Vec<usize>,
     pub selected: usize,
     pub list_offset: usize,
@@ -120,6 +151,7 @@ impl App {
     pub fn new(scan_path: PathBuf, apparent: bool) -> Self {
         Self {
             tree: None,
+            findings: Vec::new(),
             cwd: Vec::new(),
             selected: 0,
             list_offset: 0,
@@ -142,6 +174,40 @@ impl App {
         }
     }
 
+    /// Install a finished scan and derive everything cached from it.
+    pub fn set_tree(&mut self, tree: Tree) {
+        self.findings = waste_hits(&tree);
+        self.tree = Some(tree);
+    }
+
+    fn refresh_findings(&mut self) {
+        self.findings = self.tree.as_ref().map(waste_hits).unwrap_or_default();
+    }
+
+    /// Length of the list the cursor lives in for this view.
+    pub fn list_len(&self) -> usize {
+        match self.view {
+            View::Picker => self.picker.as_ref().map_or(0, |p| p.entries.len()),
+            View::Findings => self.findings.len(),
+            View::Collector => self.collector.len(),
+            View::Browse | View::Confirm { .. } => self.current_children().len(),
+            _ => 0,
+        }
+    }
+
+    /// Put the cursor on row `i` of the list in view.
+    pub fn select_row(&mut self, i: usize) {
+        match self.view {
+            View::Picker => {
+                if let Some(p) = self.picker.as_mut() {
+                    p.move_to(i);
+                }
+            }
+            View::Findings => self.findings_selected = i,
+            _ => self.selected = i,
+        }
+    }
+
     pub fn hovered_row(&self, i: usize) -> bool {
         self.hover == Some(Hover::Row(i))
     }
@@ -160,11 +226,7 @@ impl App {
             format!(
                 "  ·  {:.1}% of {}",
                 size as f64 * 100.0 / total as f64,
-                if parent.path.as_os_str() == Path::new("/").as_os_str() {
-                    "/".to_string()
-                } else {
-                    parent.name.clone()
-                }
+                node_label(parent)
             )
         });
         Some(format!(
@@ -208,6 +270,19 @@ impl App {
         self.open_picker(&start);
     }
 
+    /// Picker over a scan with staged marks: say what a new scan costs.
+    pub fn picker_marks_warning(&self) -> Option<String> {
+        if !matches!(self.view, View::Picker) || self.tree.is_none() || self.collector.is_empty() {
+            return None;
+        }
+        let n = self.collector.len();
+        Some(format!(
+            "{n} marked item{} ({}) will be dropped by a new scan · Esc keeps them",
+            if n == 1 { "" } else { "s" },
+            human_bytes(self.collector.total_bytes())
+        ))
+    }
+
     /// Back to the scan the picker interrupted, if there is still one.
     pub fn resume_scan(&mut self) {
         if self.tree.is_some() {
@@ -217,42 +292,30 @@ impl App {
         }
     }
 
-    pub fn picker_move(&mut self, delta: isize) {
-        if let Some(p) = self.picker.as_mut() {
-            p.move_sel(delta, LIST_PAGE);
-        }
-    }
-
-    pub fn picker_select(&mut self, index: usize) {
-        if let Some(p) = self.picker.as_mut() {
-            p.move_to(index, LIST_PAGE);
+    /// Apply a picker navigation result: errors become the status line.
+    fn picker_apply(&mut self, result: Result<(), String>) {
+        match result {
+            Ok(()) => self.status.clear(),
+            Err(e) => self.status = e,
         }
     }
 
     pub fn picker_enter(&mut self) {
-        let Some(p) = self.picker.as_mut() else {
-            return;
-        };
-        match p.enter(LIST_PAGE) {
-            Ok(()) => self.status.clear(),
-            Err(e) => self.status = e,
+        if let Some(r) = self.picker.as_mut().map(Picker::enter) {
+            self.picker_apply(r);
         }
     }
 
     pub fn picker_up(&mut self) {
-        let Some(p) = self.picker.as_mut() else {
-            return;
-        };
-        match p.up(LIST_PAGE) {
-            Ok(()) => self.status.clear(),
-            Err(e) => self.status = e,
+        if let Some(r) = self.picker.as_mut().map(Picker::up) {
+            self.picker_apply(r);
         }
     }
 
     /// Queue the highlighted directory (or the current one) for the walker.
     pub fn scan_picked(&mut self) {
         if let Some(p) = self.picker.as_ref() {
-            self.pending_scan = Some(p.scan_target());
+            self.pending_scan = Some(p.scan_target().to_path_buf());
         }
     }
 
@@ -260,6 +323,7 @@ impl App {
     pub fn begin_scan(&mut self, path: PathBuf) {
         self.scan_path = path;
         self.tree = None;
+        self.findings.clear();
         self.progress = None;
         self.cwd.clear();
         self.selected = 0;
@@ -331,24 +395,26 @@ impl App {
         }
         let what = if node.is_dir { "directory" } else { "file" };
         if self.collector.contains_path(&node.path) {
-            items.push((MenuAction::Unmark, "Remove from collector".to_string()));
+            items.push((MenuAction::ToggleMark, "Remove from collector".to_string()));
         } else {
-            items.push((MenuAction::Mark, format!("Mark {what} for delete")));
+            items.push((MenuAction::ToggleMark, format!("Mark {what} for delete")));
         }
-        items.push((MenuAction::Delete, format!("Delete {what}…")));
+        // Delete commits the whole collector; say so when it is not just this item.
+        let others = self.collector.len() - usize::from(self.collector.contains_path(&node.path));
+        let delete_label = if others > 0 {
+            format!("Delete {what}… (with {others} already marked)")
+        } else {
+            format!("Delete {what}…")
+        };
+        items.push((MenuAction::Delete, delete_label));
         items.push((MenuAction::Cancel, "Cancel".to_string()));
         (title, items)
     }
 
     pub fn menu_move(&mut self, delta: isize) {
-        let Some(menu) = self.menu.as_mut() else {
-            return;
-        };
-        if menu.items.is_empty() {
-            return;
+        if let Some(menu) = self.menu.as_mut() {
+            menu.selected = step(menu.selected, delta, menu.items.len());
         }
-        let last = (menu.items.len() - 1) as isize;
-        menu.selected = (menu.selected as isize + delta).clamp(0, last) as usize;
     }
 
     pub fn menu_select(&mut self, index: usize) {
@@ -370,12 +436,9 @@ impl App {
             return;
         };
         match action {
-            MenuAction::Open => match self.view {
-                View::Picker => self.picker_enter(),
-                _ => self.drill(),
-            },
+            MenuAction::Open => self.drill(),
             MenuAction::ScanHere => self.scan_picked(),
-            MenuAction::Mark | MenuAction::Unmark => self.toggle_mark_selected(),
+            MenuAction::ToggleMark => self.toggle_mark_selected(),
             MenuAction::Delete => self.delete_selected(),
             MenuAction::Cancel => {}
         }
@@ -383,22 +446,18 @@ impl App {
 
     /// Mark the selection if needed, then go straight to the confirm modal.
     fn delete_selected(&mut self) {
-        let Some(tree) = self.tree.as_ref() else {
+        let Some(path) = self
+            .selected_node_id()
+            .and_then(|id| Some(self.tree.as_ref()?.get(id).path.clone()))
+        else {
             return;
         };
-        let Some(id) = self.selected_node_id() else {
-            return;
-        };
-        if !self.collector.contains_path(&tree.get(id).path) {
-            self.toggle_mark_selected();
-            let Some(tree) = self.tree.as_ref() else {
-                return;
-            };
-            if !self.collector.contains_path(&tree.get(id).path) {
-                return; // safeguarded: toggle_mark_selected already set the status
-            }
+        if !self.collector.contains_path(&path) {
+            self.toggle_mark_selected(); // refusals leave their reason in the status
         }
-        self.begin_confirm();
+        if self.collector.contains_path(&path) {
+            self.begin_confirm();
+        }
     }
 
     pub fn open_help(&mut self) {
@@ -423,23 +482,21 @@ impl App {
         self.tree.as_ref()
     }
 
-    pub fn current_children(&self) -> Vec<usize> {
-        let Some(tree) = self.tree.as_ref() else {
-            return Vec::new();
-        };
-        let id = tree.node_at(&self.cwd);
-        tree.get(id).children.clone()
+    pub fn current_children(&self) -> &[usize] {
+        match self.tree.as_ref() {
+            Some(tree) => &tree.get(tree.node_at(&self.cwd)).children,
+            None => &[],
+        }
     }
 
     pub fn selected_id(&self) -> Option<usize> {
-        let kids = self.current_children();
-        kids.get(self.selected).copied()
+        self.current_children().get(self.selected).copied()
     }
 
     /// Node under the cursor in the current view (list or collector).
     pub fn selected_node_id(&self) -> Option<usize> {
         match self.view {
-            View::Findings => self.finding_ids().get(self.findings_selected).copied(),
+            View::Findings => self.findings.get(self.findings_selected).copied(),
             View::Collector => self.collector.items().get(self.selected).map(|i| i.node_id),
             View::Browse | View::Confirm { .. } => self.selected_id(),
             _ => None,
@@ -453,52 +510,29 @@ impl App {
     }
 
     pub fn clamp_selection(&mut self) {
-        let n = match self.view {
-            View::Findings => self.finding_ids().len(),
-            View::Collector => self.collector.len(),
-            _ => self.current_children().len(),
-        };
-        if n == 0 {
-            self.selected = 0;
-            self.findings_selected = 0;
-            return;
-        }
-        if self.selected >= n {
-            self.selected = n - 1;
-        }
-        if self.findings_selected >= n {
-            self.findings_selected = n - 1;
-        }
+        let last = self.list_len().saturating_sub(1);
+        self.selected = self.selected.min(last);
+        self.findings_selected = self.findings_selected.min(last);
     }
 
+    /// Move the cursor of whatever list is in view; the picker keeps its own.
     pub fn move_sel(&mut self, delta: isize) {
-        let n = match self.view {
-            View::Findings => self.finding_ids().len(),
-            View::Collector => self.collector.len(),
-            View::Picker | View::Confirm { .. } | View::Help | View::Scanning => return,
-            _ => self.current_children().len(),
-        };
-        if n == 0 {
-            return;
-        }
-        let idx = match self.view {
-            View::Findings => &mut self.findings_selected,
-            _ => &mut self.selected,
-        };
-        let next = *idx as isize + delta;
-        *idx = next.clamp(0, (n as isize) - 1) as usize;
-        self.ensure_visible(LIST_PAGE);
-    }
-
-    fn ensure_visible(&mut self, page: usize) {
-        let sel = match self.view {
-            View::Findings => self.findings_selected,
-            _ => self.selected,
-        };
-        if sel < self.list_offset {
-            self.list_offset = sel;
-        } else if sel >= self.list_offset + page {
-            self.list_offset = sel.saturating_sub(page.saturating_sub(1));
+        match self.view {
+            View::Picker => {
+                if let Some(p) = self.picker.as_mut() {
+                    p.move_sel(delta);
+                }
+            }
+            View::Browse | View::Findings | View::Collector => {
+                let len = self.list_len();
+                let idx = match self.view {
+                    View::Findings => &mut self.findings_selected,
+                    _ => &mut self.selected,
+                };
+                *idx = step(*idx, delta, len);
+                self.list_offset = scroll_to_show(*idx, self.list_offset, LIST_PAGE);
+            }
+            _ => {}
         }
     }
 
@@ -524,6 +558,7 @@ impl App {
                     self.status.clear();
                 }
             }
+            View::Picker => self.picker_enter(),
             _ => {}
         }
     }
@@ -597,12 +632,17 @@ impl App {
             category: n.category,
             node_id: id,
         };
+        let size = human_bytes(n.display_size(self.apparent));
+        let name = n.name.clone();
         match self.collector.toggle(item) {
             Ok(true) => {
-                self.status = format!("marked {} for delete", n.path.display());
+                self.status = format!(
+                    "marked {name} ({size}) · {} in collector · c review · x delete",
+                    self.collector.len()
+                );
             }
             Ok(false) => {
-                self.status = format!("unmarked {}", n.path.display());
+                self.status = format!("unmarked {name} · {} in collector", self.collector.len());
             }
             Err(r) => {
                 self.status = format!("refused: {}", r.reason);
@@ -610,11 +650,8 @@ impl App {
         }
     }
 
-    pub fn finding_ids(&self) -> Vec<usize> {
-        match self.tree.as_ref() {
-            Some(t) => waste_hits(t),
-            None => Vec::new(),
-        }
+    pub fn finding_ids(&self) -> &[usize] {
+        &self.findings
     }
 
     pub fn open_findings(&mut self) {
@@ -691,13 +728,14 @@ impl App {
                         }
                     }
                 }
+                self.refresh_findings();
                 let failed = result.failed.len();
                 self.status = format!(
-                    "deleted {} · {} failed · logged to stderr{}",
+                    "deleted {} · {} failed{}",
                     result.deleted.len(),
                     failed,
                     crate::delete::delete_log_path()
-                        .map(|p| format!(" and {}", p.display()))
+                        .map(|p| format!(" · logged to {}", p.display()))
                         .unwrap_or_default()
                 );
                 self.collector.clear();
@@ -729,15 +767,7 @@ impl App {
         let id = tree.node_at(&self.cwd);
         tree.ancestors(id)
             .into_iter()
-            .map(|nid| {
-                let n = tree.get(nid);
-                let label = if n.path.as_os_str() == Path::new("/").as_os_str() {
-                    "/".to_string()
-                } else {
-                    n.name.clone()
-                };
-                (label, nid)
-            })
+            .map(|nid| (node_label(tree.get(nid)), nid))
             .collect()
     }
 

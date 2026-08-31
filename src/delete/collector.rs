@@ -359,6 +359,8 @@ fn now_utc_iso() -> String {
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}")
 }
 
+/// Append to the delete log. Never writes to stderr: the TUI owns the
+/// screen, and anything printed there lands on top of the sunburst.
 fn log_delete(path: &Path, size: u64, mode: CommitMode) {
     let line = format!(
         "rings deleted {} ({}) via {:?}\n",
@@ -366,7 +368,6 @@ fn log_delete(path: &Path, size: u64, mode: CommitMode) {
         crate::size::human_bytes(size),
         mode
     );
-    eprint!("{line}");
     if let Some(log_path) = delete_log_path() {
         if let Some(parent) = log_path.parent() {
             let _ = std::fs::create_dir_all(parent);

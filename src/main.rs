@@ -8,7 +8,7 @@ use rings::cli::{help_text, Cli};
 use rings::csv_export::write_csv;
 use rings::json::tree_to_json;
 use rings::plain::render_plain;
-use rings::scan::{scan_with_progress, WalkEvent, WalkOptions};
+use rings::scan::{spawn_scan, WalkEvent, WalkOptions};
 use rings::sys;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -82,9 +82,7 @@ fn scan_headless(
     opts: WalkOptions,
     show_progress: bool,
 ) -> Result<rings::scan::Tree, String> {
-    let (tx, rx) = mpsc::channel();
-    let path_owned = path.to_path_buf();
-    std::thread::spawn(move || scan_with_progress(path_owned, opts, tx));
+    let rx = spawn_scan(path.to_path_buf(), opts);
 
     let mut printed = false;
     loop {

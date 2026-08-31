@@ -3,6 +3,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::tui::app::{scroll_to_show, step, LIST_PAGE};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
     pub name: String,
@@ -37,73 +39,56 @@ impl Picker {
     }
 
     /// Directory the scan would start from: the highlighted one, else this one.
-    pub fn scan_target(&self) -> PathBuf {
+    pub fn scan_target(&self) -> &Path {
         match self.selected_entry() {
-            Some(e) if e.is_dir => e.path.clone(),
-            _ => self.dir.clone(),
+            Some(e) if e.is_dir => &e.path,
+            _ => &self.dir,
         }
     }
 
-    pub fn move_sel(&mut self, delta: isize, page: usize) {
-        if self.entries.is_empty() {
-            self.selected = 0;
-            self.offset = 0;
-            return;
-        }
-        let last = (self.entries.len() - 1) as isize;
-        self.selected = (self.selected as isize + delta).clamp(0, last) as usize;
-        self.ensure_visible(page);
+    /// Entries are sorted directories-first, so the boundary is the count.
+    pub fn dir_count(&self) -> usize {
+        self.entries.partition_point(|e| e.is_dir)
     }
 
-    pub fn move_to(&mut self, index: usize, page: usize) {
-        if self.entries.is_empty() {
-            return;
-        }
-        self.selected = index.min(self.entries.len() - 1);
-        self.ensure_visible(page);
+    pub fn move_sel(&mut self, delta: isize) {
+        self.selected = step(self.selected, delta, self.entries.len());
+        self.offset = scroll_to_show(self.selected, self.offset, LIST_PAGE);
     }
 
-    fn ensure_visible(&mut self, page: usize) {
-        if self.selected < self.offset {
-            self.offset = self.selected;
-        } else if self.selected >= self.offset + page {
-            self.offset = self.selected.saturating_sub(page.saturating_sub(1));
-        }
+    pub fn move_to(&mut self, index: usize) {
+        self.move_sel(index as isize - self.selected as isize);
     }
 
     /// Descend into the highlighted directory. Files and unreadable
     /// directories leave the listing untouched.
-    pub fn enter(&mut self, page: usize) -> Result<(), String> {
-        let Some(entry) = self.selected_entry() else {
-            return Ok(());
-        };
-        if !entry.is_dir {
-            return Ok(());
+    pub fn enter(&mut self) -> Result<(), String> {
+        match self.selected_entry() {
+            Some(e) if e.is_dir => {
+                let target = e.path.clone();
+                self.goto(&target, None)
+            }
+            _ => Ok(()),
         }
-        let target = entry.path.clone();
-        self.goto(&target, None, page)
     }
 
     /// Go up one level, keeping the directory we left highlighted.
-    pub fn up(&mut self, page: usize) -> Result<(), String> {
+    pub fn up(&mut self) -> Result<(), String> {
         let Some(parent) = self.dir.parent().map(|p| p.to_path_buf()) else {
             return Ok(());
         };
         let leaving = self.dir.clone();
-        self.goto(&parent, Some(&leaving), page)
+        self.goto(&parent, Some(&leaving))
     }
 
-    fn goto(&mut self, dir: &Path, select: Option<&Path>, page: usize) -> Result<(), String> {
+    fn goto(&mut self, dir: &Path, select: Option<&Path>) -> Result<(), String> {
         let dir = absolute(dir);
-        let entries = read_entries(&dir)?;
+        self.entries = read_entries(&dir)?;
         self.dir = dir;
-        self.entries = entries;
         self.selected = 0;
         self.offset = 0;
-        if let Some(want) = select {
-            if let Some(i) = self.entries.iter().position(|e| e.path == want) {
-                self.move_to(i, page);
-            }
+        if let Some(i) = select.and_then(|want| self.entries.iter().position(|e| e.path == want)) {
+            self.move_to(i);
         }
         Ok(())
     }
@@ -131,10 +116,14 @@ fn read_entries(dir: &Path) -> Result<Vec<Entry>, String> {
             is_dir,
         });
     }
+    // Directories first, then case-insensitive by name; no allocation per compare.
+    fn folded(s: &str) -> impl Iterator<Item = u8> + '_ {
+        s.bytes().map(|c| c.to_ascii_lowercase())
+    }
     out.sort_by(|a, b| {
         b.is_dir
             .cmp(&a.is_dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            .then_with(|| folded(&a.name).cmp(folded(&b.name)))
             .then_with(|| a.name.cmp(&b.name))
     });
     Ok(out)
@@ -168,11 +157,11 @@ mod tests {
     fn enter_descends_and_up_reselects_the_dir_we_left() {
         let tmp = fixture();
         let mut p = Picker::open(tmp.path()).unwrap();
-        p.enter(8).unwrap();
+        p.enter().unwrap();
         assert_eq!(p.dir, absolute(&tmp.path().join("alpha")));
         assert_eq!(p.entries.len(), 1, "alpha holds one child");
 
-        p.up(8).unwrap();
+        p.up().unwrap();
         assert_eq!(p.dir, absolute(tmp.path()));
         assert_eq!(
             p.selected_entry().map(|e| e.name.as_str()),
@@ -185,12 +174,12 @@ mod tests {
     fn entering_a_file_is_a_no_op() {
         let tmp = fixture();
         let mut p = Picker::open(tmp.path()).unwrap();
-        p.move_to(2, 8);
+        p.move_to(2);
         assert_eq!(
             p.selected_entry().map(|e| e.name.as_str()),
             Some("a-file.txt")
         );
-        p.enter(8).unwrap();
+        p.enter().unwrap();
         assert_eq!(p.dir, absolute(tmp.path()), "files do not change directory");
     }
 
@@ -199,7 +188,7 @@ mod tests {
         let tmp = fixture();
         let mut p = Picker::open(tmp.path()).unwrap();
         assert_eq!(p.scan_target(), absolute(&tmp.path().join("alpha")));
-        p.move_to(2, 8); // a-file.txt
+        p.move_to(2); // a-file.txt
         assert_eq!(
             p.scan_target(),
             absolute(tmp.path()),
@@ -216,12 +205,16 @@ mod tests {
 
     #[test]
     fn move_sel_clamps_and_scrolls() {
-        let tmp = fixture();
+        let tmp = tempfile::TempDir::new().unwrap();
+        for i in 0..12 {
+            fs::create_dir(tmp.path().join(format!("d{i:02}"))).unwrap();
+        }
         let mut p = Picker::open(tmp.path()).unwrap();
-        p.move_sel(-5, 2);
+        p.move_sel(-5);
         assert_eq!(p.selected, 0);
-        p.move_sel(99, 2);
-        assert_eq!(p.selected, 2, "clamped to the last row");
-        assert_eq!(p.offset, 1, "offset follows the cursor for a 2-row page");
+        p.move_sel(99);
+        assert_eq!(p.selected, 11, "clamped to the last row");
+        assert_eq!(p.offset, 11 - (LIST_PAGE - 1), "offset follows the cursor");
+        assert_eq!(p.dir_count(), 12);
     }
 }

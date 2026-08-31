@@ -1,22 +1,23 @@
 //! Color capability: what the terminal can show, and how to say it.
-//!
-//! Detected once from the environment at startup; `flush_diff` asks on
-//! every paint so a later `set_color_depth` (options menu) takes effect.
+//! Detected once from the environment at startup; `flush_diff` reads it
+//! on every paint.
 
+use std::fmt::Write;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use super::Rgb;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum ColorDepth {
     /// No color at all (`NO_COLOR`): bold and reverse video only.
-    Mono,
-    Ansi16,
-    Ansi256,
-    TrueColor,
+    Mono = 0,
+    Ansi16 = 1,
+    Ansi256 = 2,
+    TrueColor = 3,
 }
 
-static DEPTH: AtomicU8 = AtomicU8::new(3);
+static DEPTH: AtomicU8 = AtomicU8::new(ColorDepth::TrueColor as u8);
 
 pub fn color_depth() -> ColorDepth {
     match DEPTH.load(Ordering::Relaxed) {
@@ -28,13 +29,7 @@ pub fn color_depth() -> ColorDepth {
 }
 
 pub fn set_color_depth(depth: ColorDepth) {
-    let v = match depth {
-        ColorDepth::Mono => 0,
-        ColorDepth::Ansi16 => 1,
-        ColorDepth::Ansi256 => 2,
-        ColorDepth::TrueColor => 3,
-    };
-    DEPTH.store(v, Ordering::Relaxed);
+    DEPTH.store(depth as u8, Ordering::Relaxed);
 }
 
 /// Read the environment. `RINGS_COLORS` wins, then `NO_COLOR`, then the
@@ -100,19 +95,36 @@ fn detect_from(
     ColorDepth::Ansi256
 }
 
-/// SGR parameters (without the leading `ESC[` and trailing `m`) that set
-/// this color as foreground (`fg = true`) or background at `depth`.
-/// `None` means "emit nothing" (mono).
-pub fn sgr(depth: ColorDepth, color: Rgb, fg: bool) -> Option<String> {
+/// What `color` becomes at `depth`: the packed RGB, or a palette index.
+/// Two colors with the same key would emit the same SGR, so the flusher
+/// compares keys and skips the write.
+pub fn color_key(depth: ColorDepth, color: Rgb) -> u32 {
     let Rgb(r, g, b) = color;
     match depth {
-        ColorDepth::Mono => None,
-        ColorDepth::TrueColor => Some(format!("{};2;{r};{g};{b}", if fg { 38 } else { 48 })),
-        ColorDepth::Ansi256 => Some(format!(
-            "{};5;{}",
-            if fg { 38 } else { 48 },
-            xterm256(color)
-        )),
+        ColorDepth::Mono => 0,
+        ColorDepth::Ansi16 => u32::from(ansi16(color)),
+        ColorDepth::Ansi256 => u32::from(xterm256(color)),
+        ColorDepth::TrueColor => (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b),
+    }
+}
+
+/// Append the SGR sequence that sets `color` as foreground (`fg`) or
+/// background at `depth`. Writes nothing for mono. No allocation.
+pub fn push_sgr(out: &mut String, depth: ColorDepth, color: Rgb, fg: bool) {
+    let Rgb(r, g, b) = color;
+    let _ = match depth {
+        ColorDepth::Mono => Ok(()),
+        ColorDepth::TrueColor => {
+            write!(out, "\x1b[{};2;{r};{g};{b}m", if fg { 38 } else { 48 })
+        }
+        ColorDepth::Ansi256 => {
+            write!(
+                out,
+                "\x1b[{};5;{}m",
+                if fg { 38 } else { 48 },
+                xterm256(color)
+            )
+        }
         ColorDepth::Ansi16 => {
             let i = ansi16(color);
             let base = match (fg, i >= 8) {
@@ -121,9 +133,9 @@ pub fn sgr(depth: ColorDepth, color: Rgb, fg: bool) -> Option<String> {
                 (false, false) => 40,
                 (false, true) => 100,
             };
-            Some(format!("{}", base + (i % 8) as u16))
+            write!(out, "\x1b[{}m", base + u16::from(i % 8))
         }
-    }
+    };
 }
 
 /// Nearest xterm-256 index: grayscale ramp for near-grays, else 6×6×6 cube.
@@ -252,19 +264,34 @@ mod tests {
     #[test]
     fn sgr_strings_per_depth() {
         let c = Rgb(126, 214, 92);
-        assert_eq!(
-            sgr(ColorDepth::TrueColor, c, true).unwrap(),
-            "38;2;126;214;92"
+        let sgr = |depth, fg| {
+            let mut out = String::new();
+            push_sgr(&mut out, depth, c, fg);
+            out
+        };
+        assert_eq!(sgr(ColorDepth::TrueColor, true), "\x1b[38;2;126;214;92m");
+        assert_eq!(sgr(ColorDepth::TrueColor, false), "\x1b[48;2;126;214;92m");
+        assert!(sgr(ColorDepth::Ansi256, true).starts_with("\x1b[38;5;"));
+        assert_eq!(sgr(ColorDepth::Ansi16, false), "\x1b[102m");
+        assert_eq!(sgr(ColorDepth::Ansi16, true), "\x1b[92m");
+        assert_eq!(sgr(ColorDepth::Mono, true), "");
+    }
+
+    #[test]
+    fn color_keys_collapse_shades_that_quantize_together() {
+        let a = Rgb(126, 214, 92);
+        let b = Rgb(128, 216, 94);
+        assert_ne!(
+            color_key(ColorDepth::TrueColor, a),
+            color_key(ColorDepth::TrueColor, b)
         );
         assert_eq!(
-            sgr(ColorDepth::TrueColor, c, false).unwrap(),
-            "48;2;126;214;92"
+            color_key(ColorDepth::Ansi256, a),
+            color_key(ColorDepth::Ansi256, b)
         );
-        assert!(sgr(ColorDepth::Ansi256, c, true)
-            .unwrap()
-            .starts_with("38;5;"));
-        assert_eq!(sgr(ColorDepth::Ansi16, c, false).unwrap(), "102");
-        assert_eq!(sgr(ColorDepth::Ansi16, c, true).unwrap(), "92");
-        assert_eq!(sgr(ColorDepth::Mono, c, true), None);
+        assert_eq!(
+            color_key(ColorDepth::Ansi16, a),
+            color_key(ColorDepth::Ansi16, b)
+        );
     }
 }

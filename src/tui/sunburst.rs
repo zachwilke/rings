@@ -295,6 +295,7 @@ pub fn render(buf: &mut Buffer, area: Rect, slices: &[Slice]) {
     let Some(geo) = geometry(area) else {
         return;
     };
+    let bg = theme::current().bg;
     for ty in 0..area.height {
         for tx in 0..area.width {
             let mut dots = [[None; BRAILLE_COLS]; BRAILLE_ROWS];
@@ -305,7 +306,7 @@ pub fn render(buf: &mut Buffer, area: Rect, slices: &[Slice]) {
                     dots[row][col] = sample_px(slices, &geo, px, py);
                 }
             }
-            paint_braille(buf, area.x + tx, area.y + ty, dots);
+            paint_braille(buf, area.x + tx, area.y + ty, dots, bg);
         }
     }
 }
@@ -411,8 +412,8 @@ fn paint_braille(
     x: u16,
     y: u16,
     dots: [[Option<Rgb>; BRAILLE_COLS]; BRAILLE_ROWS],
+    bg: Rgb,
 ) {
-    let th = theme::current();
     let mut colors: Vec<(Rgb, usize)> = Vec::new();
     let mut on_disk = 0usize;
     for row in dots.iter() {
@@ -437,7 +438,7 @@ fn paint_braille(
     let bg = if colors.len() == 2 && all_on {
         colors[1].0
     } else {
-        th.bg
+        bg
     };
     let mut bits = 0u8;
     for row in 0..BRAILLE_ROWS {
@@ -691,7 +692,7 @@ mod tests {
             [None, Some(th.palette[0])],
         ];
         let mut buf = Buffer::new(1, 1, th.bg);
-        paint_braille(&mut buf, 0, 0, dots);
+        paint_braille(&mut buf, 0, 0, dots, th.bg);
         let ch = buf.get(0, 0).unwrap().ch;
         assert_eq!(ch, braille_char(0x01 | 0x80), "top-left + bottom-right");
         let raster = raster_cell(*buf.get(0, 0).unwrap());

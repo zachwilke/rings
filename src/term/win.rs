@@ -169,8 +169,6 @@ fn decode_records(recs: &[win32::InputRecord]) -> Vec<Event> {
                     let delta = (buttons >> 16) as i16;
                     if delta != 0 {
                         events.push(Event::Wheel {
-                            x: col,
-                            y: row,
                             delta: if delta > 0 { -1 } else { 1 },
                         });
                     }

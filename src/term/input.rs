@@ -31,10 +31,8 @@ pub enum Event {
         x: u16,
         y: u16,
     },
-    /// Scroll wheel: `delta` is -1 for up, +1 for down.
+    /// Scroll wheel: -1 for up, +1 for down.
     Wheel {
-        x: u16,
-        y: u16,
         delta: i8,
     },
     /// Pointer moved (any-motion tracking): drives hover highlights.
@@ -164,8 +162,8 @@ fn decode_sgr_mouse(bytes: &[u8]) -> (Option<Event>, usize) {
                 let ev = if code & 0b100_0000 != 0 {
                     // Wheel: 64 up, 65 down (modifier bits 4/8/16 ignored).
                     match code & 0b11 {
-                        0 => Some(Event::Wheel { x, y, delta: -1 }),
-                        1 => Some(Event::Wheel { x, y, delta: 1 }),
+                        0 => Some(Event::Wheel { delta: -1 }),
+                        1 => Some(Event::Wheel { delta: 1 }),
                         _ => None,
                     }
                 } else if code & 0b10_0000 != 0 {
@@ -217,22 +215,8 @@ mod tests {
 
     #[test]
     fn decodes_wheel_and_motion() {
-        assert_eq!(
-            decode(b"\x1b[<64;10;5M"),
-            vec![Event::Wheel {
-                x: 9,
-                y: 4,
-                delta: -1
-            }]
-        );
-        assert_eq!(
-            decode(b"\x1b[<65;10;5M"),
-            vec![Event::Wheel {
-                x: 9,
-                y: 4,
-                delta: 1
-            }]
-        );
+        assert_eq!(decode(b"\x1b[<64;10;5M"), vec![Event::Wheel { delta: -1 }]);
+        assert_eq!(decode(b"\x1b[<65;10;5M"), vec![Event::Wheel { delta: 1 }]);
         assert_eq!(
             decode(b"\x1b[<35;10;5M"),
             vec![Event::Move { x: 9, y: 4 }],

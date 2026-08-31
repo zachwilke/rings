@@ -46,6 +46,13 @@ pub fn scan(path: &Path, opts: WalkOptions) -> Result<Tree, String> {
     scan_inner(path, opts, None)
 }
 
+/// Walk on a background thread; the receiver yields progress, then `Done`.
+pub fn spawn_scan(path: PathBuf, opts: WalkOptions) -> std::sync::mpsc::Receiver<WalkEvent> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || scan_with_progress(path, opts, tx));
+    rx
+}
+
 pub fn scan_with_progress(path: PathBuf, opts: WalkOptions, tx: Sender<WalkEvent>) {
     match scan_inner(&path, opts, Some(&tx)) {
         Ok(tree) => {

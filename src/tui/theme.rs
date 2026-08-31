@@ -17,8 +17,6 @@ pub struct Theme {
     pub warn: Rgb,
     pub danger: Rgb,
     pub select_bg: Rgb,
-    /// Hover highlight for rows and chips: between `bg` and `select_bg`.
-    pub hover_bg: Rgb,
     /// "smaller objects" wedge and de-emphasised glyphs.
     pub smaller: Rgb,
     /// Footer chip face — distinct from `bg` so buttons read as buttons.
@@ -43,7 +41,6 @@ pub const RINGS: Theme = Theme {
     warn: Rgb(230, 176, 72),
     danger: Rgb(224, 88, 88),
     select_bg: Rgb(36, 52, 80),
-    hover_bg: Rgb(24, 34, 56),
     smaller: Rgb(86, 92, 108),
     chip: Rgb(34, 48, 74),
     palette: [
@@ -75,7 +72,6 @@ pub const NORD: Theme = Theme {
     warn: Rgb(235, 203, 139),
     danger: Rgb(191, 97, 106),
     select_bg: Rgb(67, 76, 94),
-    hover_bg: Rgb(54, 61, 75),
     smaller: Rgb(76, 86, 106),
     chip: Rgb(67, 76, 94),
     palette: [
@@ -107,7 +103,6 @@ pub const GRUVBOX: Theme = Theme {
     warn: Rgb(250, 189, 47),
     danger: Rgb(251, 73, 52),
     select_bg: Rgb(80, 73, 69),
-    hover_bg: Rgb(52, 50, 48),
     smaller: Rgb(102, 92, 84),
     chip: Rgb(80, 73, 69),
     palette: [
@@ -139,7 +134,6 @@ pub const DRACULA: Theme = Theme {
     warn: Rgb(241, 250, 140),
     danger: Rgb(255, 85, 85),
     select_bg: Rgb(68, 71, 90),
-    hover_bg: Rgb(50, 52, 68),
     smaller: Rgb(77, 80, 102),
     chip: Rgb(68, 71, 90),
     palette: [
@@ -171,7 +165,6 @@ pub const SOLARIZED: Theme = Theme {
     warn: Rgb(181, 137, 0),
     danger: Rgb(220, 50, 47),
     select_bg: Rgb(9, 73, 89),
-    hover_bg: Rgb(4, 50, 62),
     smaller: Rgb(88, 110, 117),
     chip: Rgb(9, 73, 89),
     palette: [
@@ -204,7 +197,6 @@ pub const MONO: Theme = Theme {
     warn: Rgb(210, 210, 210),
     danger: Rgb(255, 255, 255),
     select_bg: Rgb(70, 70, 70),
-    hover_bg: Rgb(28, 28, 28),
     smaller: Rgb(90, 90, 90),
     chip: Rgb(50, 50, 50),
     palette: [
@@ -235,7 +227,7 @@ thread_local! {
 
 /// The active theme for this thread. Cheap: a thread-local read and an index.
 pub fn current() -> &'static Theme {
-    &BUILTIN[ACTIVE.with(|a| a.get()).min(BUILTIN.len() - 1)]
+    &BUILTIN[ACTIVE.with(|a| a.get())]
 }
 
 /// Activate a built-in by name (case-insensitive) on the calling thread —
@@ -259,17 +251,15 @@ pub fn names() -> Vec<&'static str> {
 }
 
 impl Theme {
-    pub fn category_color(&self, cat: crate::classify::Category) -> Rgb {
-        use crate::classify::Category::*;
-        match cat {
-            Normal => self.palette[0],
-            Temp => self.temp,
-            Cache => self.cache,
-            Log => self.log,
-            Journal => self.journal,
-            Crash => self.crash,
-        }
+    /// Hover highlight for rows and chips: a whisper of the selection color.
+    pub fn hover_bg(&self) -> Rgb {
+        mix(self.bg, self.select_bg, 0.4)
     }
+}
+
+fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
+    let lerp = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
+    Rgb(lerp(a.0, b.0), lerp(a.1, b.1), lerp(a.2, b.2))
 }
 
 /// Fade so the outermost ring stays readable (~0.62) at 4 rings or 8.
@@ -304,7 +294,16 @@ pub fn brighten(color: Rgb) -> Rgb {
 }
 
 pub fn category_color(cat: crate::classify::Category) -> Rgb {
-    current().category_color(cat)
+    use crate::classify::Category::*;
+    let th = current();
+    match cat {
+        Normal => th.palette[0],
+        Temp => th.temp,
+        Cache => th.cache,
+        Log => th.log,
+        Journal => th.journal,
+        Crash => th.crash,
+    }
 }
 
 #[cfg(test)]
@@ -335,7 +334,7 @@ mod tests {
             0.2126 * c.0 as f32 + 0.7152 * c.1 as f32 + 0.0722 * c.2 as f32
         }
         for t in BUILTIN {
-            for bg in [t.bg, t.panel, t.select_bg, t.hover_bg, t.chip] {
+            for bg in [t.bg, t.panel, t.select_bg, t.hover_bg(), t.chip] {
                 assert!(
                     luma(t.text) - luma(bg) > 90.0,
                     "{}: text on {bg:?} too close",
@@ -343,7 +342,7 @@ mod tests {
                 );
             }
             assert!(
-                luma(t.hover_bg) < luma(t.select_bg),
+                luma(t.hover_bg()) < luma(t.select_bg),
                 "{}: hover is subtler",
                 t.name
             );
