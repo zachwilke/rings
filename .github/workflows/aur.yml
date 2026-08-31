@@ -1,0 +1,49 @@
+# Publish packaging/aur/rings-bin to the AUR on a GitHub Release.
+# First publish still needs a manual `git push` to aur.archlinux.org (see
+# packaging/aur/README.md). After that, set repo secrets AUR_USERNAME and
+# AUR_SSH_PRIVATE_KEY. If those secrets are unset, this job skips — it does
+# not fail the release.
+name: AUR
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip when AUR secrets are unset
+        id: gate
+        env:
+          AUR_USERNAME: ${{ secrets.AUR_USERNAME }}
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          if [ -z "$AUR_USERNAME" ] || [ -z "$AUR_SSH_PRIVATE_KEY" ]; then
+            echo "AUR_USERNAME / AUR_SSH_PRIVATE_KEY unset; skip AUR publish"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.skip != 'true'
+
+      - name: Point PKGBUILD at this release
+        if: steps.gate.outputs.skip != 'true' && github.event_name == 'release'
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i "s/^pkgver=.*/pkgver=${VERSION}/" packaging/aur/rings-bin/PKGBUILD
+
+      - name: Publish AUR package
+        if: steps.gate.outputs.skip != 'true'
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.3
+        with:
+          pkgname: rings-bin
+          pkgbuild: ./packaging/aur/rings-bin/PKGBUILD
+          updpkgsums: "true"
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: zach@pinefall.dev
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: Update rings-bin to ${{ github.ref_name }}

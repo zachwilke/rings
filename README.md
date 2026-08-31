@@ -36,6 +36,29 @@ The Unix installer writes `/usr/local/bin/rings` (may ask for sudo once) so `sud
 
 Linux downloads are one static musl binary per arch — the same file for Debian/Ubuntu, RHEL/Fedora/CentOS, and Arch. No glibc version soup, no distro repo.
 
+Homebrew (macOS and Linux):
+
+```bash
+brew install zachwilke/rings/rings
+```
+
+Arch (AUR):
+
+```bash
+yay -S rings-bin
+```
+
+AUR publish may still be pending the first AUR account push.
+
+Debian/Ubuntu (`.deb` from GitHub Releases):
+
+```bash
+curl -fsSL -o rings.deb https://github.com/zachwilke/rings/releases/download/v0.2.0/rings_0.2.0_amd64.deb
+sudo apt install ./rings.deb
+```
+
+arm64: `rings_0.2.0_arm64.deb`. armhf: `rings_0.2.0_armhf.deb`. A signed apt source comes later.
+
 Manual per-platform download (fallback):
 
 ### Linux

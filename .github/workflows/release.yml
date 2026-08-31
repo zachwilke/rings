@@ -120,6 +120,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -eu
           VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           TAG="v$VERSION"
           NOTES=".github/release-notes-${TAG}.md"
@@ -127,8 +128,24 @@ jobs:
             NOTES=".github/release-notes-v0.1.0.md"
           fi
           ls -l dist
+
+          # Wrap the three Linux musl binaries in .debs (static — no libc Depends).
+          # amd64 <- x86_64-linux-musl, arm64 <- aarch64-linux-musl, armhf <- armv7.
+          xz -dk dist/rings-x86_64-linux-musl.xz
+          xz -dk dist/rings-aarch64-linux-musl.xz
+          xz -dk dist/rings-armv7-linux-musleabihf.xz
+          OUTDIR=dist packaging/debian/build-deb.sh "$VERSION" amd64 dist/rings-x86_64-linux-musl
+          OUTDIR=dist packaging/debian/build-deb.sh "$VERSION" arm64 dist/rings-aarch64-linux-musl
+          OUTDIR=dist packaging/debian/build-deb.sh "$VERSION" armhf dist/rings-armv7-linux-musleabihf
+          ls -l dist/rings_"$VERSION"_*.deb
+
+          DEBS="dist/rings_${VERSION}_amd64.deb dist/rings_${VERSION}_arm64.deb dist/rings_${VERSION}_armhf.deb"
+
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "$TAG already exists"
+            echo "$TAG already exists; uploading .deb assets onto the existing tag"
+            # Do not re-create the tag. Do not re-upload xz (already on the release).
+            # --clobber lets a packaging-only change refresh the debs without a version bump.
+            gh release upload "$TAG" $DEBS --clobber --repo "$GITHUB_REPOSITORY"
             exit 0
           fi
           gh release create "$TAG" \
@@ -139,6 +156,7 @@ jobs:
             dist/rings-aarch64-apple-darwin.xz \
             dist/rings-x86_64-apple-darwin.xz \
             dist/rings-x86_64-pc-windows-msvc.exe.zip \
+            $DEBS \
             --repo "$GITHUB_REPOSITORY" \
             --title "$TAG" \
             --notes-file "$NOTES"
