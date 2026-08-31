@@ -26,7 +26,7 @@ curl -fsSL https://raw.githubusercontent.com/zachwilke/rings/main/install.sh | s
 irm https://raw.githubusercontent.com/zachwilke/rings/main/install.ps1 | iex
 ```
 
-The one-liner lives on `main` (so the platform map stays current) and fetches the latest published release, not a pinned tag. Pin with `RING_VERSION=v0.1.3`; install to a chosen directory with `RING_PREFIX`. Unix needs `curl` or `wget`, plus `xz` (`apt install xz-utils` / `brew install xz`).
+The one-liner lives on `main` (so the platform map stays current) and fetches the latest published release, not a pinned tag. Pin with `RING_VERSION=v0.2.0`; install to a chosen directory with `RING_PREFIX`. Unix needs `curl` or `wget`, plus `xz` (`apt install xz-utils` / `brew install xz`).
 
 The Unix installer writes `/usr/local/bin/rings` (may ask for sudo once) so `sudo rings /` works. If it cannot write there, it falls back to `~/.local/bin` and prints the full-path next command (`sudo ~/.local/bin/rings /`).
 
@@ -37,7 +37,7 @@ Manual per-platform download (fallback):
 ### Linux
 
 ```bash
-curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.3/rings-x86_64-linux-musl.xz | xz -d > rings
+curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.2.0/rings-x86_64-linux-musl.xz | xz -d > rings
 chmod +x rings
 sudo ./rings /
 ```
@@ -50,11 +50,11 @@ On aarch64 machines (servers, 64-bit Pi OS) use `rings-aarch64-linux-musl.xz` in
 
 ```bash
 # 64-bit Raspberry Pi OS
-curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.3/rings-aarch64-linux-musl.xz | xz -d > rings
+curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.2.0/rings-aarch64-linux-musl.xz | xz -d > rings
 # 32-bit Raspberry Pi OS (Pi 2/3/4)
-# curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.3/rings-armv7-linux-musleabihf.xz | xz -d > rings
+# curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.2.0/rings-armv7-linux-musleabihf.xz | xz -d > rings
 # Pi 1 / Zero (armv6)
-# curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.3/rings-arm-linux-musleabihf.xz | xz -d > rings
+# curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.2.0/rings-arm-linux-musleabihf.xz | xz -d > rings
 chmod +x rings
 sudo ./rings /
 ```
@@ -63,7 +63,7 @@ sudo ./rings /
 
 ```bash
 # Apple Silicon
-curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.3/rings-aarch64-apple-darwin.xz | xz -d > rings
+curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.2.0/rings-aarch64-apple-darwin.xz | xz -d > rings
 # Intel: rings-x86_64-apple-darwin.xz
 chmod +x rings
 sudo ./rings /
@@ -72,7 +72,7 @@ sudo ./rings /
 ### Windows (PowerShell)
 
 ```powershell
-irm https://github.com/zachwilke/rings/releases/download/v0.1.3/rings-x86_64-pc-windows-msvc.exe.zip -OutFile rings.zip
+irm https://github.com/zachwilke/rings/releases/download/v0.2.0/rings-x86_64-pc-windows-msvc.exe.zip -OutFile rings.zip
 Expand-Archive -Force rings.zip .
 .\rings.exe C:\
 .\rings.exe --plain C:\
