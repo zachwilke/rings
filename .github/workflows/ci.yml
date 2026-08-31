@@ -38,6 +38,8 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sh -n packaging/debian/build-deb.sh
+          sh -n packaging/debian/build-apt-repo.sh
+          sh -n packaging/debian/add-apt-repo.sh
           VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           grep -F "pkgver=$VERSION" packaging/aur/rings-bin/PKGBUILD
           grep -F "pkgver = $VERSION" packaging/aur/rings-bin/.SRCINFO
