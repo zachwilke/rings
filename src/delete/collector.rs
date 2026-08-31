@@ -113,22 +113,49 @@ pub struct CommitResult {
 }
 
 pub fn needs_typed_confirm() -> bool {
-    crate::unix::running_as_root() || !trash_dir().is_some_and(|p| can_use_trash(&p))
+    crate::sys::running_as_root() || !trash_dir().is_some_and(|p| can_use_trash(&p))
 }
 
 fn trash_dir() -> Option<PathBuf> {
-    if crate::unix::running_as_root() {
+    if crate::sys::running_as_root() {
         return None;
     }
-    let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join(crate::constants::TRASH_REL))
+    #[cfg(windows)]
+    {
+        // Recycle Bin is not a folder we write into; a sentinel means "available".
+        return Some(PathBuf::from("Recycle.Bin"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return Some(crate::sys::home_dir()?.join(crate::constants::MACOS_TRASH_REL));
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Some(crate::sys::home_dir()?.join(crate::constants::TRASH_REL))
+    }
 }
 
 fn can_use_trash(dir: &Path) -> bool {
-    if dir.exists() {
-        return dir.is_dir();
+    #[cfg(windows)]
+    {
+        let _ = dir;
+        return true;
     }
-    std::fs::create_dir_all(dir.join("files")).is_ok() && std::fs::create_dir_all(dir.join("info")).is_ok()
+    #[cfg(target_os = "macos")]
+    {
+        if dir.exists() {
+            return dir.is_dir();
+        }
+        std::fs::create_dir_all(dir).is_ok()
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if dir.exists() {
+            return dir.is_dir();
+        }
+        std::fs::create_dir_all(dir.join("files")).is_ok()
+            && std::fs::create_dir_all(dir.join("info")).is_ok()
+    }
 }
 
 pub fn confirm_is_valid(confirm: &Confirm) -> Result<CommitMode, String> {
@@ -205,45 +232,81 @@ fn unlink(path: &Path, is_dir: bool) -> Result<(), String> {
 }
 
 fn move_to_trash(path: &Path) -> Result<(), String> {
-    let trash = trash_dir().ok_or_else(|| "no trash directory".to_string())?;
-    let files = trash.join("files");
-    let info = trash.join("info");
-    std::fs::create_dir_all(&files).map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&info).map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    {
+        return recycle_bin(path);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return macos_trash(path);
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let trash = trash_dir().ok_or_else(|| "no trash directory".to_string())?;
+        let files = trash.join("files");
+        let info = trash.join("info");
+        std::fs::create_dir_all(&files).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&info).map_err(|e| e.to_string())?;
 
+        let base = path
+            .file_name()
+            .ok_or_else(|| "path has no file name".to_string())?;
+        let mut dest_name = base.to_os_string();
+        let mut n = 1u32;
+        while files.join(&dest_name).exists()
+            || info
+                .join(format!("{}.trashinfo", dest_name.to_string_lossy()))
+                .exists()
+        {
+            dest_name = format!("{}-{n}", base.to_string_lossy()).into();
+            n += 1;
+            if n > 10_000 {
+                return Err("too many trash name collisions".into());
+            }
+        }
+
+        let dest = files.join(&dest_name);
+        std::fs::rename(path, &dest).or_else(|_| copy_then_remove(path, &dest))?;
+
+        let abs = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(path))
+                .unwrap_or_else(|_| path.to_path_buf())
+        };
+        let body = format!(
+            "[Trash Info]\nPath={}\nDeletionDate={}\n",
+            abs.display(),
+            now_utc_iso()
+        );
+        let info_name = format!("{}.trashinfo", dest_name.to_string_lossy());
+        std::fs::write(info.join(info_name), body).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_trash(path: &Path) -> Result<(), String> {
+    let trash = trash_dir().ok_or_else(|| "no trash directory".to_string())?;
+    std::fs::create_dir_all(&trash).map_err(|e| e.to_string())?;
     let base = path
         .file_name()
         .ok_or_else(|| "path has no file name".to_string())?;
     let mut dest_name = base.to_os_string();
     let mut n = 1u32;
-    while files.join(&dest_name).exists() || info.join(format!("{}.trashinfo", dest_name.to_string_lossy())).exists() {
+    while trash.join(&dest_name).exists() {
         dest_name = format!("{}-{n}", base.to_string_lossy()).into();
         n += 1;
         if n > 10_000 {
             return Err("too many trash name collisions".into());
         }
     }
-
-    let dest = files.join(&dest_name);
-    std::fs::rename(path, &dest).or_else(|_| copy_then_remove(path, &dest))?;
-
-    let abs = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(path))
-            .unwrap_or_else(|_| path.to_path_buf())
-    };
-    let body = format!(
-        "[Trash Info]\nPath={}\nDeletionDate={}\n",
-        abs.display(),
-        now_utc_iso()
-    );
-    let info_name = format!("{}.trashinfo", dest_name.to_string_lossy());
-    std::fs::write(info.join(info_name), body).map_err(|e| e.to_string())?;
-    Ok(())
+    let dest = trash.join(&dest_name);
+    std::fs::rename(path, &dest).or_else(|_| copy_then_remove(path, &dest))
 }
 
+#[cfg(not(windows))]
 fn copy_then_remove(from: &Path, to: &Path) -> Result<(), String> {
     if from.is_dir() {
         copy_dir(from, to)?;
@@ -254,6 +317,7 @@ fn copy_then_remove(from: &Path, to: &Path) -> Result<(), String> {
     }
 }
 
+#[cfg(not(windows))]
 fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
     std::fs::create_dir_all(to).map_err(|e| e.to_string())?;
     for ent in std::fs::read_dir(from).map_err(|e| e.to_string())? {
@@ -271,6 +335,7 @@ fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
 
 /// `YYYY-MM-DDThh:mm:ss` (UTC) from the UNIX clock, no chrono needed.
 /// Civil-from-days algorithm by Howard Hinnant.
+#[cfg(all(unix, not(target_os = "macos")))]
 fn now_utc_iso() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -318,11 +383,69 @@ fn log_delete(path: &Path, size: u64, mode: CommitMode) {
 }
 
 pub fn delete_log_path() -> Option<PathBuf> {
-    if crate::unix::running_as_root() {
-        return Some(PathBuf::from(crate::constants::DELETE_LOG_ROOT));
+    if crate::sys::running_as_root() {
+        #[cfg(windows)]
+        {
+            return Some(PathBuf::from(r"C:\ProgramData\rings\delete.log"));
+        }
+        #[cfg(not(windows))]
+        {
+            return Some(PathBuf::from(crate::constants::DELETE_LOG_ROOT));
+        }
     }
-    let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join(crate::constants::DELETE_LOG_USER_REL))
+    #[cfg(windows)]
+    {
+        let base = std::env::var_os("LOCALAPPDATA").or_else(|| std::env::var_os("USERPROFILE"))?;
+        Some(PathBuf::from(base).join(r"rings\delete.log"))
+    }
+    #[cfg(not(windows))]
+    {
+        Some(crate::sys::home_dir()?.join(crate::constants::DELETE_LOG_USER_REL))
+    }
+}
+
+/// Send `path` to the Windows Recycle Bin (`FO_DELETE` + `FOF_ALLOWUNDO`).
+#[cfg(windows)]
+fn recycle_bin(path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    use crate::sys::win32;
+
+    let abs = std::fs::canonicalize(path).unwrap_or_else(|_| {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(path))
+                .unwrap_or_else(|_| path.to_path_buf())
+        }
+    });
+    let mut display = abs.to_string_lossy().replace('/', "\\");
+    if let Some(stripped) = display.strip_prefix(r"\\?\") {
+        display = stripped.to_string();
+    }
+    let mut wide: Vec<u16> = std::ffi::OsString::from(&display).encode_wide().collect();
+    wide.push(0);
+    wide.push(0);
+
+    let mut op = win32::ShFileOpStructW {
+        hwnd: std::ptr::null_mut(),
+        w_func: win32::FO_DELETE,
+        p_from: wide.as_ptr(),
+        p_to: std::ptr::null(),
+        f_flags: win32::FOF_ALLOWUNDO
+            | win32::FOF_NOCONFIRMATION
+            | win32::FOF_SILENT
+            | win32::FOF_NOERRORUI,
+        f_any_operations_aborted: 0,
+        h_name_mappings: std::ptr::null_mut(),
+        lpsz_progress_title: std::ptr::null(),
+    };
+    let rc = unsafe { win32::SHFileOperationW(&mut op) };
+    if rc != 0 || op.f_any_operations_aborted != 0 {
+        return Err(format!("Recycle Bin failed (code {rc})"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -357,7 +480,11 @@ mod tests {
     #[test]
     fn refuse_safeguarded_paths() {
         let mut c = Collector::new();
-        let err = c.mark(item(Path::new("/etc"), 1, true)).unwrap_err();
+        #[cfg(unix)]
+        let blocked = Path::new("/etc");
+        #[cfg(windows)]
+        let blocked = Path::new(r"C:\Windows");
+        let err = c.mark(item(blocked, 1, true)).unwrap_err();
         assert!(err.reason.contains("safeguarded"));
         assert!(c.is_empty());
     }

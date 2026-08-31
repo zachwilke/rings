@@ -2,7 +2,10 @@
 
 use std::path::Path;
 
+#[cfg(unix)]
 use crate::constants::SPECIAL_SKIP_PATHS;
+#[cfg(windows)]
+use crate::constants::{SPECIAL_SKIP_COMPONENTS, SPECIAL_SKIP_FILES};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SkipReason {
@@ -11,10 +14,39 @@ pub enum SkipReason {
 }
 
 pub fn is_special_path(path: &Path) -> bool {
-    let raw = path.to_string_lossy();
-    let s = raw.trim_end_matches('/');
-    for special in SPECIAL_SKIP_PATHS {
-        if s == *special || s.starts_with(&format!("{special}/")) {
+    #[cfg(unix)]
+    {
+        let raw = path.to_string_lossy();
+        let s = raw.trim_end_matches('/');
+        for special in SPECIAL_SKIP_PATHS {
+            if s == *special || s.starts_with(&format!("{special}/")) {
+                return true;
+            }
+        }
+        false
+    }
+    #[cfg(windows)]
+    {
+        windows_special(path)
+    }
+}
+
+#[cfg(windows)]
+fn windows_special(path: &Path) -> bool {
+    for c in path.components() {
+        if let std::path::Component::Normal(name) = c {
+            let n = name.to_string_lossy();
+            if SPECIAL_SKIP_COMPONENTS
+                .iter()
+                .any(|s| n.eq_ignore_ascii_case(s))
+            {
+                return true;
+            }
+        }
+    }
+    if let Some(name) = path.file_name() {
+        let n = name.to_string_lossy();
+        if SPECIAL_SKIP_FILES.iter().any(|s| n.eq_ignore_ascii_case(s)) {
             return true;
         }
     }
@@ -44,9 +76,9 @@ pub fn skip_reason(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::MetadataExt;
     use std::path::Path;
 
+    #[cfg(unix)]
     #[test]
     fn special_paths_match_exact_and_children() {
         assert!(is_special_path(Path::new("/proc")));
@@ -59,6 +91,18 @@ mod tests {
         assert!(!is_special_path(Path::new("/var")));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn special_paths_match_windows_junk() {
+        assert!(is_special_path(Path::new(r"C:\$Recycle.Bin")));
+        assert!(is_special_path(Path::new(r"C:\$Recycle.Bin\S-1-5-18")));
+        assert!(is_special_path(Path::new(r"D:\System Volume Information")));
+        assert!(is_special_path(Path::new(r"C:\pagefile.sys")));
+        assert!(is_special_path(Path::new(r"C:\hiberfil.sys")));
+        assert!(!is_special_path(Path::new(r"C:\Users\zach")));
+        assert!(!is_special_path(Path::new(r"C:\Temp")));
+    }
+
     #[test]
     fn one_file_system_uses_device_ids() {
         assert!(!is_other_filesystem(true, 1, 1));
@@ -66,10 +110,18 @@ mod tests {
         assert!(!is_other_filesystem(false, 1, 2));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn proc_is_other_filesystem_from_tmp() {
-        let tmp_dev = std::fs::metadata("/tmp").expect("tmp").dev();
-        let proc_dev = std::fs::metadata("/proc").expect("proc").dev();
+        use crate::sys;
+        let tmp_dev = sys::path_dev(
+            std::path::Path::new("/tmp"),
+            &std::fs::metadata("/tmp").expect("tmp"),
+        );
+        let proc_dev = sys::path_dev(
+            std::path::Path::new("/proc"),
+            &std::fs::metadata("/proc").expect("proc"),
+        );
         assert_ne!(
             tmp_dev, proc_dev,
             "/tmp and /proc must be different devices on Linux"

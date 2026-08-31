@@ -9,7 +9,7 @@ use rings::csv_export::write_csv;
 use rings::json::tree_to_json;
 use rings::plain::render_plain;
 use rings::scan::{scan_with_progress, WalkEvent, WalkOptions};
-use rings::unix;
+use rings::sys;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -42,8 +42,8 @@ fn run(cli: Cli) -> Result<(), String> {
         root_dev_override: None,
     };
 
-    if !cli.wants_tui(unix::stdout_is_tty()) {
-        let show_progress = unix::stderr_is_tty() && (cli.json || cli.csv.is_some());
+    if !cli.wants_tui(sys::stdout_is_tty()) {
+        let show_progress = sys::stderr_is_tty() && (cli.json || cli.csv.is_some());
         let tree = scan_headless(&path, opts, show_progress)?;
         if cli.json {
             let json = tree_to_json(&tree, tree.root);
@@ -98,8 +98,8 @@ fn scan_headless(
                 if printed {
                     eprintln!();
                 }
-                if show_progress && !unix::running_as_root() {
-                    eprintln!("hint: not running as root — sudo rings / to see the whole disk");
+                if show_progress && !sys::running_as_root() {
+                    eprintln!("hint: {}", sys::full_disk_hint());
                 }
                 return result;
             }

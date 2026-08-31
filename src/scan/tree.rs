@@ -198,10 +198,7 @@ mod tests {
     #[test]
     fn detach_subtracts_from_ancestors() {
         let mut tree = Tree {
-            nodes: vec![
-                dir("root", None, 10, vec![1]),
-                file("a", Some(0), 90),
-            ],
+            nodes: vec![dir("root", None, 10, vec![1]), file("a", Some(0), 90)],
             root: 0,
             stats: ScanStats::default(),
         };

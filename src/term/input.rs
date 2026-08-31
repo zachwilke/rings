@@ -1,5 +1,6 @@
 //! Keyboard + SGR mouse input without crossterm.
 
+#[cfg(unix)]
 use std::io::Read;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,11 +22,15 @@ pub enum Key {
 pub enum Event {
     Key(Key),
     /// Left button press at 0-based cell coordinates.
-    Click { x: u16, y: u16 },
+    Click {
+        x: u16,
+        y: u16,
+    },
 }
 
 /// Wait up to `timeout_ms` for input. Returns all events decoded from the
 /// bytes that arrived (escape sequences can batch).
+#[cfg(unix)]
 pub fn poll_event(timeout_ms: i32) -> Vec<Event> {
     let mut fds = libc::pollfd {
         fd: libc::STDIN_FILENO,
@@ -39,6 +44,11 @@ pub fn poll_event(timeout_ms: i32) -> Vec<Event> {
     let mut raw = [0u8; 512];
     let read = std::io::stdin().lock().read(&mut raw).unwrap_or(0);
     decode(&raw[..read])
+}
+
+#[cfg(windows)]
+pub fn poll_event(timeout_ms: i32) -> Vec<Event> {
+    super::win::poll_event(timeout_ms)
 }
 
 pub fn decode(bytes: &[u8]) -> Vec<Event> {
@@ -167,10 +177,7 @@ mod tests {
 
     #[test]
     fn decodes_sgr_left_click_press_only() {
-        assert_eq!(
-            decode(b"\x1b[<0;10;5M"),
-            vec![Event::Click { x: 9, y: 4 }]
-        );
+        assert_eq!(decode(b"\x1b[<0;10;5M"), vec![Event::Click { x: 9, y: 4 }]);
         // release ignored
         assert_eq!(decode(b"\x1b[<0;10;5m"), vec![]);
         // wheel ignored

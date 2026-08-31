@@ -1,4 +1,4 @@
-//! Tag common Linux server waste: temp, cache, logs, journals, crash dumps.
+//! Tag common waste: temp, cache, logs, journals, crash dumps.
 
 use std::path::Path;
 
@@ -48,6 +48,7 @@ impl std::fmt::Display for Category {
 }
 
 /// Longest-prefix first so `/var/log/journal` is a journal, not a log.
+/// macOS paths (`/private/tmp`, `Library/Caches`) sit alongside Linux ones.
 const PREFIX_RULES: &[(&str, Category)] = &[
     ("/var/log/journal", Category::Journal),
     ("/run/log/journal", Category::Journal),
@@ -55,9 +56,16 @@ const PREFIX_RULES: &[(&str, Category)] = &[
     ("/var/lib/apport/coredump", Category::Crash),
     ("/var/crash", Category::Crash),
     ("/var/cache", Category::Cache),
+    ("/private/var/log", Category::Log),
+    ("/private/var/tmp", Category::Temp),
+    ("/private/var/folders", Category::Temp),
+    ("/private/tmp", Category::Temp),
+    ("/var/folders", Category::Temp),
     ("/var/log", Category::Log),
     ("/var/tmp", Category::Temp),
     ("/tmp", Category::Temp),
+    ("/Library/Caches", Category::Cache),
+    ("/Library/Logs", Category::Log),
 ];
 
 /// Classify an absolute or relative path. Relative paths still match
@@ -72,8 +80,11 @@ pub fn classify(path: &Path) -> Category {
         }
     }
 
-    if has_component(&normalized, ".cache") {
+    if has_component(&normalized, ".cache") || has_component(&normalized, "Caches") {
         return Category::Cache;
+    }
+    if has_component(&normalized, "Logs") && has_component(&normalized, "Library") {
+        return Category::Log;
     }
     if has_component(&normalized, "thumbnails") && has_component(&normalized, ".cache")
         || has_component(&normalized, "thumbnails") && normalized.contains("/.thumbnails")
@@ -82,6 +93,16 @@ pub fn classify(path: &Path) -> Category {
     }
     if normalized.contains("/.thumbnails/") || normalized.ends_with("/.thumbnails") {
         return Category::Cache;
+    }
+    if has_component_ci(&normalized, "$Recycle.Bin") || has_component(&normalized, ".Trash") {
+        return Category::Temp;
+    }
+    if has_component_ci(&normalized, "Temp")
+        && (has_component_ci(&normalized, "AppData")
+            || has_component_ci(&normalized, "Windows")
+            || has_component_ci(&normalized, "Local"))
+    {
+        return Category::Temp;
     }
 
     // Package-manager cache dirs that sometimes live outside /var/cache.
@@ -115,6 +136,10 @@ fn has_component(path: &str, name: &str) -> bool {
     path.split('/').any(|c| c == name)
 }
 
+fn has_component_ci(path: &str, name: &str) -> bool {
+    path.split('/').any(|c| c.eq_ignore_ascii_case(name))
+}
+
 fn ends_with_component(path: &str, name: &str) -> bool {
     path.rsplit('/').next().is_some_and(|c| c == name)
 }
@@ -135,10 +160,16 @@ mod tests {
         assert_eq!(classify(Path::new("/tmp/x")), Category::Temp);
         assert_eq!(classify(Path::new("/var/tmp/foo")), Category::Temp);
         assert_eq!(classify(Path::new("/var/cache")), Category::Cache);
-        assert_eq!(classify(Path::new("/var/cache/apt/archives")), Category::Cache);
+        assert_eq!(
+            classify(Path::new("/var/cache/apt/archives")),
+            Category::Cache
+        );
         assert_eq!(classify(Path::new("/var/cache/dnf")), Category::Cache);
         assert_eq!(classify(Path::new("/var/cache/yum")), Category::Cache);
-        assert_eq!(classify(Path::new("/var/cache/pacman/pkg")), Category::Cache);
+        assert_eq!(
+            classify(Path::new("/var/cache/pacman/pkg")),
+            Category::Cache
+        );
         assert_eq!(
             classify(Path::new("/home/zach/.cache/thumbnails")),
             Category::Cache
@@ -167,5 +198,27 @@ mod tests {
         assert_eq!(classify(Path::new("/opt/app")), Category::Normal);
         assert_eq!(classify(Path::new("/tmpfoo")), Category::Normal);
         assert_eq!(classify(Path::new("/var/lib/docker")), Category::Normal);
+    }
+
+    #[test]
+    fn macos_and_windows_waste_paths() {
+        assert_eq!(classify(Path::new("/private/tmp/x")), Category::Temp);
+        assert_eq!(
+            classify(Path::new("/private/var/folders/zz")),
+            Category::Temp
+        );
+        assert_eq!(
+            classify(Path::new("/Users/zach/Library/Caches/com.foo")),
+            Category::Cache
+        );
+        assert_eq!(
+            classify(Path::new(r"C:\Users\zach\AppData\Local\Temp\foo")),
+            Category::Temp
+        );
+        assert_eq!(classify(Path::new(r"C:\Windows\Temp\bar")), Category::Temp);
+        assert_eq!(
+            classify(Path::new(r"C:\$Recycle.Bin\S-1-5-18")),
+            Category::Temp
+        );
     }
 }

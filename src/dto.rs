@@ -25,11 +25,7 @@ pub fn include_in_export(is_dir: bool, size_bytes: u64, category: Category) -> b
 }
 
 /// Rows for CSV, walked iteratively so deep trees cannot blow the stack.
-pub fn finding_rows(
-    tree: &Tree,
-    subtree: usize,
-    collector: &BTreeSet<PathBuf>,
-) -> Vec<FindingRow> {
+pub fn finding_rows(tree: &Tree, subtree: usize, collector: &BTreeSet<PathBuf>) -> Vec<FindingRow> {
     let mut rows = Vec::new();
     let mut stack = vec![subtree];
     while let Some(id) = stack.pop() {

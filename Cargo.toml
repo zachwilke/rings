@@ -1,16 +1,16 @@
 [package]
 name = "rings"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 rust-version = "1.88"
-description = "DaisyDisk-style disk usage TUI for Linux servers"
+description = "DaisyDisk-style disk usage TUI for Linux, macOS, and Windows"
 license = "MIT"
 authors = ["Zach Wilke <zach@pinefall.dev>"]
 readme = "README.md"
 keywords = ["disk", "usage", "tui", "sunburst", "sysadmin"]
 categories = ["command-line-utilities"]
 
-[dependencies]
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]
