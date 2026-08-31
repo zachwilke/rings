@@ -1,11 +1,13 @@
+use crate::cli::KEY_LINES;
 use crate::constants::DELETE_CONFIRM_PHRASE;
 use crate::delete::needs_typed_confirm;
+use crate::logo;
 use crate::size::{group_u64, human_bytes};
-use crate::term::{Buffer, Rect, Rgb};
+use crate::term::{Buffer, Cell, Rect, Rgb};
 use crate::tui::app::{Action, App, View};
 use crate::tui::sunburst::{self, Slice};
 use crate::tui::theme::{
-    self, category_color, ACCENT, BG, DANGER, MUTED, PANEL, SELECT_BG, TEXT, WARN,
+    self, category_color, ACCENT, BG, DANGER, MUTED, PANEL, PALETTE, SELECT_BG, TEXT, WARN,
 };
 
 pub struct HitMap {
@@ -51,7 +53,7 @@ pub fn draw(buf: &mut Buffer, app: &App) -> HitMap {
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 fn draw_scan(buf: &mut Buffer, app: &App) {
-    let x = buf.print_styled(1, 0, "rings ", TEXT, BG, true);
+    let x = buf.print_styled(1, 0, "◎ rings ", TEXT, BG, true);
     buf.print(x, 0, "scanning", MUTED, BG);
 
     let (files, dirs, errors, current) = match &app.progress {
@@ -59,13 +61,24 @@ fn draw_scan(buf: &mut Buffer, app: &App) {
         None => (0, 0, 0, app.scan_path.display().to_string()),
     };
 
-    // Centered block with breathing room, spinner alive while the walk runs.
-    let cy = (buf.height / 2).saturating_sub(2);
+    let (lw, lh) = logo::size();
+    let lx = buf.width.saturating_sub(lw) / 2;
+    // Sit the mark above the spinner so the first paint is the sunburst, not a blank wait.
+    let ly = (buf.height / 2).saturating_sub(lh / 2 + 3).max(1);
+    paint_logo(buf, lx, ly, true);
+
+    let cy = ly.saturating_add(lh).saturating_add(1);
     let spinner = SPINNER[app.spin_frame(SPINNER.len())];
     let path_line = app.scan_path.display().to_string();
     let px = (buf.width.saturating_sub(path_line.chars().count() as u16 + 2)) / 2;
     let x = buf.print(px, cy, spinner, ACCENT, BG);
-    buf.print(x + 1, cy, &truncate(&path_line, buf.width.saturating_sub(4) as usize), ACCENT, BG);
+    buf.print(
+        x + 1,
+        cy,
+        &truncate(&path_line, buf.width.saturating_sub(4) as usize),
+        ACCENT,
+        BG,
+    );
 
     let counts = format!(
         "{} files   {} dirs   {} errors",
@@ -74,11 +87,11 @@ fn draw_scan(buf: &mut Buffer, app: &App) {
         group_u64(errors)
     );
     let cx = (buf.width.saturating_sub(counts.chars().count() as u16)) / 2;
-    buf.print_styled(cx, cy + 2, &counts, TEXT, BG, true);
+    buf.print_styled(cx, cy.saturating_add(2), &counts, TEXT, BG, true);
 
     let shown = truncate(&current, buf.width.saturating_sub(6) as usize);
     let sx = (buf.width.saturating_sub(shown.chars().count() as u16)) / 2;
-    buf.print(sx, cy + 4, &shown, MUTED, BG);
+    buf.print(sx, cy.saturating_add(3), &shown, MUTED, BG);
 
     let hint = if app.is_root {
         "scanning as root · other filesystems skipped · /proc /sys /dev /run skipped"
@@ -132,7 +145,7 @@ fn draw_main(buf: &mut Buffer, app: &App) -> HitMap {
 
 fn draw_header(buf: &mut Buffer, app: &App, area: Rect) -> Vec<(Rect, usize)> {
     let mut crumbs = Vec::new();
-    let mut x = buf.print_styled(area.x + 1, area.y, "rings ", TEXT, BG, true);
+    let mut x = buf.print_styled(area.x + 1, area.y, "◎ rings ", TEXT, BG, true);
     for (i, (label, nid)) in app.breadcrumb().iter().enumerate() {
         if i > 0 {
             x = buf.print(x, area.y, " › ", MUTED, BG);
@@ -446,12 +459,12 @@ fn draw_footer(buf: &mut Buffer, app: &App, area: Rect) -> Vec<(Rect, Action)> {
 
     let keys = match app.view {
         View::Collector => {
-            "j/k move  ·  Space unmark  ·  x confirm  ·  h/⌫ back  ·  e export  ·  q quit"
+            "j/k move  ·  Space unmark  ·  x confirm  ·  h/⌫ back  ·  e export  ·  ? help  ·  q quit"
         }
         View::Findings => {
-            "j/k move  ·  Enter jump  ·  Space mark  ·  h/⌫ back  ·  click a row  ·  q quit"
+            "j/k move  ·  Enter jump  ·  Space mark  ·  h/⌫ back  ·  ? help  ·  q quit"
         }
-        _ => "j/k/↑↓ select  ·  Enter/double-click drill  ·  h/⌫ up  ·  Space mark  ·  click a slice  ·  q quit",
+        _ => "j/k/↑↓ select  ·  Enter drill  ·  Space mark  ·  ? help  ·  q quit",
     };
     let line = if app.status.is_empty() {
         format!("  {keys}")
@@ -536,35 +549,84 @@ fn draw_confirm_modal(buf: &mut Buffer, app: &App, hits: &mut HitMap) {
 }
 
 fn draw_help(buf: &mut Buffer) {
-    const HELP: &[&str] = &[
-        "rings — keys and mouse",
-        "",
-        "  ↑ ↓ j k     move selection",
-        "  Enter       drill into the selected directory",
-        "  h Backspace go up one directory",
-        "  Space  d    mark or unmark for the delete collector",
-        "  f           Temp & cache findings",
-        "  c           delete collector",
-        "  x           confirm delete (from collector)",
-        "  e           export current view as rings-export.csv",
-        "  ?           this help",
-        "  q           quit",
-        "",
-        "  Mouse",
-        "  click a sunburst slice    select that folder",
-        "  double-click a slice      drill in",
-        "  click a list row          select",
-        "  click footer buttons      Temp & cache, Collector, Export, Quit",
-        "",
-        "  Delete is never automatic. The collector shows paths and total size.",
-        "  As root, type DELETE to unlink. Deletes are logged to stderr and a log file.",
-        "",
-        "  Esc / h     back",
-    ];
-    for (i, line) in HELP.iter().enumerate() {
-        if (i as u16) < buf.height {
-            buf.print(1, i as u16, line, TEXT, BG);
+    let (lw, lh) = logo::size();
+    // Use the full screen so a 24-row SSH session still shows every binding.
+    let rect = Rect {
+        x: 0,
+        y: 0,
+        width: buf.width,
+        height: buf.height,
+    };
+    buf.fill(rect, BG);
+    let inner = draw_box(buf, rect, " keys  ·  ? and F1 ", ACCENT, ACCENT);
+
+    let lx = inner.x + (inner.width.saturating_sub(lw)) / 2;
+    paint_logo(buf, lx, inner.y, true);
+
+    let mut y = inner.y.saturating_add(lh).saturating_add(1);
+    for line in KEY_LINES {
+        if y >= inner.bottom() {
+            break;
         }
+        buf.print(
+            inner.x + 2,
+            y,
+            &truncate(line, inner.width.saturating_sub(4) as usize),
+            if line.is_empty() || *line == "Mouse" {
+                MUTED
+            } else {
+                TEXT
+            },
+            BG,
+        );
+        y = y.saturating_add(1);
+    }
+}
+
+/// Color the shared logo: gold rays, nested ring hues, bright center.
+fn paint_logo(buf: &mut Buffer, x: u16, y: u16, color: bool) {
+    let (lw, _) = logo::size();
+    for (i, line) in logo::lines().enumerate() {
+        let row = y.saturating_add(i as u16);
+        if row >= buf.height {
+            break;
+        }
+        let mut cx = x;
+        for (col, ch) in line.chars().enumerate() {
+            if cx >= buf.width {
+                break;
+            }
+            let (fg, bold) = if color {
+                logo_glyph_color(ch, col, lw as usize)
+            } else {
+                (TEXT, false)
+            };
+            buf.set_cell(
+                cx,
+                row,
+                Cell {
+                    ch,
+                    fg,
+                    bg: BG,
+                    bold,
+                },
+            );
+            cx = cx.saturating_add(1);
+        }
+    }
+}
+
+fn logo_glyph_color(ch: char, col: usize, width: usize) -> (Rgb, bool) {
+    let mid = width / 2;
+    let dist = col.abs_diff(mid);
+    match ch {
+        '◎' => (ACCENT, true),
+        '╭' | '╮' | '╰' | '╯' if dist <= 3 => (PALETTE[0], true),
+        '╭' | '╮' | '╰' | '╯' => (PALETTE[1], false),
+        '─' | '│' if dist <= 3 => (PALETTE[0], false),
+        '─' | '│' if dist <= 6 => (PALETTE[1], false),
+        '─' | '│' | '╲' | '╱' | '·' => (WARN, false),
+        _ => (TEXT, false),
     }
 }
 

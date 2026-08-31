@@ -106,7 +106,12 @@ fn handle_key(app: &mut App, key: Key) {
     if matches!(app.view, View::Help) {
         if matches!(
             key,
-            Key::Esc | Key::Char('h') | Key::Char('q') | Key::Backspace
+            Key::Esc
+                | Key::Char('h')
+                | Key::Char('q')
+                | Key::Char('?')
+                | Key::F1
+                | Key::Backspace
         ) {
             app.view = View::Browse;
         }
@@ -115,7 +120,7 @@ fn handle_key(app: &mut App, key: Key) {
 
     match key {
         Key::Char('q') => app.quit = true,
-        Key::Char('?') => app.view = View::Help,
+        Key::Char('?') | Key::F1 => app.view = View::Help,
         Key::Char('j') | Key::Down => app.move_sel(1),
         Key::Char('k') | Key::Up => app.move_sel(-1),
         Key::PageDown => app.move_sel(10),
@@ -265,6 +270,7 @@ mod tests {
             "child list should name the directory:\n{screen}"
         );
         assert!(screen.contains("rings"), "header:\n{screen}");
+        assert!(screen.contains("? help"), "footer should hint ? help:\n{screen}");
         let has_block =
             screen.contains('█') || screen.contains('▀') || screen.contains('▄');
         assert!(has_block, "sunburst should paint block cells:\n{screen}");
@@ -306,5 +312,58 @@ mod tests {
             .expect("quit button");
         handle_click(&mut app, &hits, quit.0.x, quit.0.y);
         assert!(app.quit, "clicking Quit should set quit");
+    }
+
+    #[test]
+    fn help_overlay_lists_every_binding_and_the_logo() {
+        let mut app = App::new(std::path::PathBuf::from("."), false);
+        app.view = View::Help;
+        let mut buf = Buffer::new(80, 24, BG);
+        draw::draw(&mut buf, &app);
+        let screen = buf.text();
+
+        assert!(screen.contains('◎'), "shared logo center:\n{screen}");
+        assert!(screen.contains('╭'), "nested rings:\n{screen}");
+        for needle in [
+            "move selection",
+            "drill into",
+            "go up",
+            "mark or unmark",
+            "Temp & cache",
+            "delete collector",
+            "confirm delete",
+            "export current view",
+            "?  F1",
+            "quit",
+            "Mouse",
+            "double-click",
+        ] {
+            assert!(screen.contains(needle), "help missing {needle}:\n{screen}");
+        }
+    }
+
+    #[test]
+    fn question_and_f1_toggle_help() {
+        let mut app = App::new(std::path::PathBuf::from("."), false);
+        app.view = View::Browse;
+        handle_key(&mut app, Key::Char('?'));
+        assert_eq!(app.view, View::Help);
+        handle_key(&mut app, Key::F1);
+        assert_eq!(app.view, View::Browse);
+        handle_key(&mut app, Key::F1);
+        assert_eq!(app.view, View::Help);
+        handle_key(&mut app, Key::Esc);
+        assert_eq!(app.view, View::Browse);
+    }
+
+    #[test]
+    fn first_paint_shows_the_shared_logo() {
+        let mut app = App::new(std::path::PathBuf::from("/var"), false);
+        app.view = View::Scanning;
+        let mut buf = Buffer::new(80, 24, BG);
+        draw::draw(&mut buf, &app);
+        let screen = buf.text();
+        assert!(screen.contains('◎'), "scan first paint should show the logo:\n{screen}");
+        assert!(screen.contains('╭'), "nested rings on first paint:\n{screen}");
     }
 }
