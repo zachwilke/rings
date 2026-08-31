@@ -4,9 +4,10 @@ use std::path::Path;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use rings::cli::{Cli, HELP};
+use rings::cli::{help_text, Cli};
 use rings::csv_export::write_csv;
 use rings::json::tree_to_json;
+use rings::plain::render_plain;
 use rings::scan::{scan_with_progress, WalkEvent, WalkOptions};
 use rings::unix;
 
@@ -21,7 +22,7 @@ fn main() {
         }
     };
     if cli.help {
-        print!("{HELP}");
+        print!("{}", help_text());
         return;
     }
     if cli.version {
@@ -41,8 +42,9 @@ fn run(cli: Cli) -> Result<(), String> {
         root_dev_override: None,
     };
 
-    if cli.json || cli.csv.is_some() {
-        let tree = scan_headless(&path, opts)?;
+    if !cli.wants_tui(unix::stdout_is_tty()) {
+        let show_progress = unix::stderr_is_tty() && (cli.json || cli.csv.is_some());
+        let tree = scan_headless(&path, opts, show_progress)?;
         if cli.json {
             let json = tree_to_json(&tree, tree.root);
             io::stdout()
@@ -50,9 +52,16 @@ fn run(cli: Cli) -> Result<(), String> {
                 .write_all(json.as_bytes())
                 .map_err(|e| e.to_string())?;
         }
-        if let Some(csv_path) = cli.csv {
-            let n = write_csv(&csv_path, &tree, tree.root, &BTreeSet::new())?;
+        if let Some(csv_path) = &cli.csv {
+            let n = write_csv(csv_path, &tree, tree.root, &BTreeSet::new())?;
             eprintln!("wrote {n} rows to {}", csv_path.display());
+        }
+        if cli.plain || (!cli.json && cli.csv.is_none()) {
+            let table = render_plain(&tree, tree.root);
+            io::stdout()
+                .lock()
+                .write_all(table.as_bytes())
+                .map_err(|e| e.to_string())?;
         }
         return Ok(());
     }
@@ -60,7 +69,11 @@ fn run(cli: Cli) -> Result<(), String> {
     rings::tui::run(path, opts, cli.apparent)
 }
 
-fn scan_headless(path: &Path, opts: WalkOptions) -> Result<rings::scan::Tree, String> {
+fn scan_headless(
+    path: &Path,
+    opts: WalkOptions,
+    show_progress: bool,
+) -> Result<rings::scan::Tree, String> {
     let (tx, rx) = mpsc::channel();
     let path_owned = path.to_path_buf();
     std::thread::spawn(move || scan_with_progress(path_owned, opts, tx));
@@ -69,21 +82,23 @@ fn scan_headless(path: &Path, opts: WalkOptions) -> Result<rings::scan::Tree, St
     loop {
         match rx.recv_timeout(Duration::from_millis(80)) {
             Ok(WalkEvent::Progress(p)) => {
-                eprint!(
-                    "\rscanning {:>8} files  {:>6} dirs  {:>4} errors  {}          ",
-                    p.files,
-                    p.dirs,
-                    p.errors,
-                    p.current.display()
-                );
-                let _ = io::stderr().flush();
-                printed = true;
+                if show_progress {
+                    eprint!(
+                        "\rscanning {:>8} files  {:>6} dirs  {:>4} errors  {}          ",
+                        p.files,
+                        p.dirs,
+                        p.errors,
+                        p.current.display()
+                    );
+                    let _ = io::stderr().flush();
+                    printed = true;
+                }
             }
             Ok(WalkEvent::Done(result)) => {
                 if printed {
                     eprintln!();
                 }
-                if !unix::running_as_root() {
+                if show_progress && !unix::running_as_root() {
                     eprintln!("hint: not running as root — sudo rings / to see the whole disk");
                 }
                 return result;

@@ -7,6 +7,8 @@ pub mod csv_export;
 pub mod delete;
 pub mod dto;
 pub mod json;
+pub mod logo;
+pub mod plain;
 pub mod scan;
 pub mod size;
 pub mod term;

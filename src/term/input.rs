@@ -14,6 +14,7 @@ pub enum Key {
     Esc,
     PageUp,
     PageDown,
+    F1,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,6 +73,10 @@ fn decode_escape(bytes: &[u8]) -> (Option<Event>, usize) {
     if bytes.len() == 1 {
         return (Some(Event::Key(Key::Esc)), 1);
     }
+    if bytes[1] == b'O' && bytes.len() >= 3 && bytes[2] == b'P' {
+        // SS3 F1 (xterm / application mode)
+        return (Some(Event::Key(Key::F1)), 3);
+    }
     if bytes[1] != b'[' {
         // Alt+key or stray escape: treat as Esc, consume the pair.
         return (Some(Event::Key(Key::Esc)), 2);
@@ -90,6 +95,9 @@ fn decode_escape(bytes: &[u8]) -> (Option<Event>, usize) {
                     Key::PageDown
                 };
                 return (Some(Event::Key(key)), 4);
+            }
+            b'1' if bytes.len() >= 5 && bytes[3] == b'1' && bytes[4] == b'~' => {
+                return (Some(Event::Key(Key::F1)), 5);
             }
             _ => {}
         }
@@ -153,6 +161,8 @@ mod tests {
         assert_eq!(decode(b"\x1b[B"), vec![Event::Key(Key::Down)]);
         assert_eq!(decode(b"\x1b[5~"), vec![Event::Key(Key::PageUp)]);
         assert_eq!(decode(b"\x1b[6~"), vec![Event::Key(Key::PageDown)]);
+        assert_eq!(decode(b"\x1bOP"), vec![Event::Key(Key::F1)]);
+        assert_eq!(decode(b"\x1b[11~"), vec![Event::Key(Key::F1)]);
     }
 
     #[test]
