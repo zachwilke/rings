@@ -28,6 +28,8 @@ irm https://raw.githubusercontent.com/zachwilke/rings/main/install.ps1 | iex
 
 The one-liner lives on `main` (so the platform map stays current) and fetches the latest published release, not a pinned tag. Pin with `RING_VERSION=v0.1.3`; install to a chosen directory with `RING_PREFIX`. Unix needs `curl` or `wget`, plus `xz` (`apt install xz-utils` / `brew install xz`).
 
+The Unix installer writes `/usr/local/bin/rings` (may ask for sudo once) so `sudo rings /` works. If it cannot write there, it falls back to `~/.local/bin` and prints the full-path next command (`sudo ~/.local/bin/rings /`).
+
 Linux downloads are one static musl binary per arch — the same file for Debian/Ubuntu, RHEL/Fedora/CentOS, and Arch. No glibc version soup, no distro repo.
 
 Manual per-platform download (fallback):

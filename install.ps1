@@ -22,21 +22,6 @@ function Get-RingsAssetName {
     }
 }
 
-function Test-UserWritableDirectory {
-    param([string]$Path)
-    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
-        return $false
-    }
-    $probe = Join-Path $Path ".rings-write-test"
-    try {
-        [System.IO.File]::WriteAllText($probe, "")
-        Remove-Item -LiteralPath $probe -Force
-        return $true
-    } catch {
-        return $false
-    }
-}
-
 if ($args.Count -ge 1 -and ($args[0] -eq "-PrintAsset" -or $args[0] -eq "--print-asset")) {
     $os = if ($args.Count -ge 2) { [string]$args[1] } else { "Windows" }
     $arch = if ($args.Count -ge 3) { [string]$args[2] } else { $env:PROCESSOR_ARCHITECTURE }
@@ -121,19 +106,24 @@ foreach ($p in $pathDirs) {
 }
 
 if (-not $onPath) {
-    $copied = $false
-    foreach ($p in $pathDirs) {
-        if ($p -and (Test-UserWritableDirectory $p)) {
-            Copy-Item -Force -LiteralPath $dest -Destination (Join-Path $p "rings.exe")
-            Write-Host "also copied to $p (already on PATH)"
-            $copied = $true
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if ($null -eq $userPath) { $userPath = "" }
+    $onUserPath = $false
+    foreach ($p in ($userPath -split ";" | Where-Object { $_ })) {
+        $trim = $p.TrimEnd("\")
+        if ($trim -and ($trim -ieq $dir.TrimEnd("\"))) {
+            $onUserPath = $true
             break
         }
     }
-    if (-not $copied) {
-        Write-Host "note: $dir is not on PATH. Add it to your user PATH, or copy rings.exe into a PATH directory."
-        Write-Host "  [Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path','User') + ';$dir', 'User')"
+    if (-not $onUserPath) {
+        $newPath = if ($userPath.Trim().Length -gt 0) { "$userPath;$dir" } else { $dir }
+        [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
+        Write-Host "added $dir to user PATH — open a new shell"
+    } else {
+        Write-Host "note: $dir is on user PATH — open a new shell"
     }
+    $env:Path = "$env:Path;$dir"
 }
 
 Write-Host "next: $dest C:\"
