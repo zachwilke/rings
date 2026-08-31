@@ -2,6 +2,10 @@
 # workflow_dispatch rebuilds from a chosen (or latest) release without a crate bump.
 # release.yml also calls this after uploading debs — including the existing-tag
 # path, where `release: published` does not fire.
+#
+# If RINGS_APT_GPG_PRIVATE_KEY is unset, skip every publish step (exit 0).
+# Do not upload a Pages artifact, deploy-pages, or git push -f gh-pages —
+# an unsigned tree would wipe the signed snapshot.
 name: Apt repo
 
 on:
@@ -31,12 +35,30 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
+      # Empty secret → skip (exit 0). Do not build or push: an unsigned
+      # tree would git push -f gh-pages and wipe the signed snapshot.
+      - name: Require signing key
+        id: key
+        env:
+          RINGS_APT_GPG_PRIVATE_KEY: ${{ secrets.RINGS_APT_GPG_PRIVATE_KEY }}
+        run: |
+          if [ -z "${RINGS_APT_GPG_PRIVATE_KEY:-}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "RINGS_APT_GPG_PRIVATE_KEY unset; skip apt publish"
+            echo "signed gh-pages snapshot is left untouched"
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
+        if: steps.key.outputs.skip != 'true'
 
       - name: Install dpkg-dev
+        if: steps.key.outputs.skip != 'true'
         run: sudo apt-get update && sudo apt-get install -y dpkg-dev gnupg
 
       - name: Download release debs
+        if: steps.key.outputs.skip != 'true'
         id: debs
         env:
           GH_TOKEN: ${{ github.token }}
@@ -75,20 +97,20 @@ jobs:
           ls -l debs
 
       - name: Build apt repo
-        if: steps.debs.outputs.missing != 'true'
+        if: steps.key.outputs.skip != 'true' && steps.debs.outputs.missing != 'true'
         env:
           RINGS_APT_GPG_PRIVATE_KEY: ${{ secrets.RINGS_APT_GPG_PRIVATE_KEY }}
           RINGS_APT_GPG_KEY_ID: ${{ secrets.RINGS_APT_GPG_KEY_ID }}
         run: packaging/debian/build-apt-repo.sh debs apt-out
 
       - name: Configure Pages
-        if: steps.debs.outputs.missing != 'true'
+        if: steps.key.outputs.skip != 'true' && steps.debs.outputs.missing != 'true'
         id: pages
         continue-on-error: true
         uses: actions/configure-pages@v5
 
       - name: Upload Pages artifact
-        if: steps.debs.outputs.missing != 'true' && steps.pages.outcome == 'success'
+        if: steps.key.outputs.skip != 'true' && steps.debs.outputs.missing != 'true' && steps.pages.outcome == 'success'
         id: upload
         continue-on-error: true
         uses: actions/upload-pages-artifact@v3
@@ -96,13 +118,13 @@ jobs:
           path: apt-out
 
       - name: Deploy to GitHub Pages
-        if: steps.debs.outputs.missing != 'true' && steps.pages.outcome == 'success' && steps.upload.outcome == 'success'
+        if: steps.key.outputs.skip != 'true' && steps.debs.outputs.missing != 'true' && steps.pages.outcome == 'success' && steps.upload.outcome == 'success'
         id: deploy
         continue-on-error: true
         uses: actions/deploy-pages@v4
 
       - name: Push gh-pages fallback
-        if: steps.debs.outputs.missing != 'true' && steps.deploy.outcome != 'success'
+        if: steps.key.outputs.skip != 'true' && steps.debs.outputs.missing != 'true' && steps.deploy.outcome != 'success'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
