@@ -17,6 +17,10 @@ mod imp {
     pub fn stderr_is_tty() -> bool {
         unsafe { libc::isatty(libc::STDERR_FILENO) == 1 }
     }
+
+    pub fn stdin_is_tty() -> bool {
+        unsafe { libc::isatty(libc::STDIN_FILENO) == 1 }
+    }
 }
 
 #[cfg(windows)]
@@ -33,6 +37,10 @@ mod imp {
 
     pub fn stderr_is_tty() -> bool {
         is_console(win32::STD_ERROR_HANDLE)
+    }
+
+    pub fn stdin_is_tty() -> bool {
+        is_console(win32::STD_INPUT_HANDLE)
     }
 
     fn is_console(std_handle: u32) -> bool {
@@ -64,6 +72,9 @@ pub(crate) mod win32 {
     pub const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 0x0004;
     pub const DISABLE_NEWLINE_AUTO_RETURN: u32 = 0x0008;
 
+    pub const ENABLE_PROCESSED_INPUT: u32 = 0x0001;
+    pub const ENABLE_LINE_INPUT: u32 = 0x0002;
+    pub const ENABLE_ECHO_INPUT: u32 = 0x0004;
     pub const ENABLE_WINDOW_INPUT: u32 = 0x0008;
     pub const ENABLE_MOUSE_INPUT: u32 = 0x0010;
     pub const ENABLE_EXTENDED_FLAGS: u32 = 0x0080;
@@ -156,6 +167,13 @@ pub(crate) mod win32 {
         pub fn WaitForSingleObject(h: Handle, ms: u32) -> u32;
         pub fn ReadConsoleInputW(h: Handle, buf: *mut InputRecord, len: u32, read: *mut u32)
             -> i32;
+        pub fn ReadFile(
+            h: Handle,
+            buf: *mut u8,
+            len: u32,
+            read: *mut u32,
+            overlapped: *mut c_void,
+        ) -> i32;
     }
 
     #[link(name = "shell32")]
@@ -181,7 +199,7 @@ pub(crate) mod win32 {
     }
 }
 
-pub use imp::{running_as_root, stderr_is_tty, stdout_is_tty};
+pub use imp::{running_as_root, stderr_is_tty, stdin_is_tty, stdout_is_tty};
 
 /// Device id for `--one-file-system`. Unix uses `st_dev`. Windows uses the
 /// drive letter (or a UNC sentinel) — `MetadataExt::volume_serial_number`

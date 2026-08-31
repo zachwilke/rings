@@ -26,7 +26,7 @@ curl -fsSL https://raw.githubusercontent.com/zachwilke/rings/main/install.sh | s
 irm https://raw.githubusercontent.com/zachwilke/rings/main/install.ps1 | iex
 ```
 
-The one-liner lives on `main` (so the platform map stays current) and fetches the latest published release, not a pinned tag. Pin with `RING_VERSION=v0.1.2`; install to a chosen directory with `RING_PREFIX`. Unix needs `curl` or `wget`, plus `xz` (`apt install xz-utils` / `brew install xz`).
+The one-liner lives on `main` (so the platform map stays current) and fetches the latest published release, not a pinned tag. Pin with `RING_VERSION=v0.1.3`; install to a chosen directory with `RING_PREFIX`. Unix needs `curl` or `wget`, plus `xz` (`apt install xz-utils` / `brew install xz`).
 
 Linux downloads are one static musl binary per arch — the same file for Debian/Ubuntu, RHEL/Fedora/CentOS, and Arch. No glibc version soup, no distro repo.
 
@@ -35,7 +35,7 @@ Manual per-platform download (fallback):
 ### Linux
 
 ```bash
-curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.2/rings-x86_64-linux-musl.xz | xz -d > rings
+curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.3/rings-x86_64-linux-musl.xz | xz -d > rings
 chmod +x rings
 sudo ./rings /
 ```
@@ -48,11 +48,11 @@ On aarch64 machines (servers, 64-bit Pi OS) use `rings-aarch64-linux-musl.xz` in
 
 ```bash
 # 64-bit Raspberry Pi OS
-curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.2/rings-aarch64-linux-musl.xz | xz -d > rings
+curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.3/rings-aarch64-linux-musl.xz | xz -d > rings
 # 32-bit Raspberry Pi OS (Pi 2/3/4)
-# curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.2/rings-armv7-linux-musleabihf.xz | xz -d > rings
+# curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.3/rings-armv7-linux-musleabihf.xz | xz -d > rings
 # Pi 1 / Zero (armv6)
-# curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.2/rings-arm-linux-musleabihf.xz | xz -d > rings
+# curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.3/rings-arm-linux-musleabihf.xz | xz -d > rings
 chmod +x rings
 sudo ./rings /
 ```
@@ -61,7 +61,7 @@ sudo ./rings /
 
 ```bash
 # Apple Silicon
-curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.2/rings-aarch64-apple-darwin.xz | xz -d > rings
+curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.3/rings-aarch64-apple-darwin.xz | xz -d > rings
 # Intel: rings-x86_64-apple-darwin.xz
 chmod +x rings
 sudo ./rings /
@@ -70,7 +70,7 @@ sudo ./rings /
 ### Windows (PowerShell)
 
 ```powershell
-irm https://github.com/zachwilke/rings/releases/download/v0.1.2/rings-x86_64-pc-windows-msvc.exe.zip -OutFile rings.zip
+irm https://github.com/zachwilke/rings/releases/download/v0.1.3/rings-x86_64-pc-windows-msvc.exe.zip -OutFile rings.zip
 Expand-Archive -Force rings.zip .
 .\rings.exe C:\
 .\rings.exe --plain C:\
@@ -95,11 +95,14 @@ rings.exe C:\          # Windows PowerShell (Administrator for the whole disk)
 rings /var/log         # any path; default is .
 rings help             # logo, usage, and every key binding
 rings --plain /        # parseable table to stdout, no TUI
+rings --offline /      # TUI without the GitHub Release update check
 rings --csv out.csv /  # findings CSV for scripts, then exit
 rings --json /srv      # analyzed tree as JSON
 ```
 
 When stdout is not a terminal (a pipe or redirect), rings prints the plain table automatically — no TUI, no spinner. `--plain` / `--no-tui`, `--csv`, and `--json` never enter the TUI, even in a terminal.
+
+On an interactive TUI launch, rings asks GitHub Releases whether a newer version is out (about two seconds, then gives up) and offers to install it in place. `--plain`, `--json`, `--csv`, pipes, `--help`, and `--version` never check and never prompt. Skip with `--offline` or `RINGS_NO_UPDATE=1`. The check uses `curl` or `wget` (PowerShell / `curl.exe` on Windows) — no extra libraries. If the install path is not writable, rings prints the installer one-liner instead of sudoing.
 
 rings stays on one filesystem (`--all-filesystems` to cross), skips Linux virtual mounts (`/proc` `/sys` `/dev` `/run`; `/dev` on macOS), never follows symlinked directories, counts hard-linked inodes once, and counts permission errors instead of crashing. Without root it scans what it can read and reminds you `sudo rings /` (or Administrator on Windows) sees everything.
 

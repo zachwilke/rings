@@ -29,6 +29,8 @@ fn main() {
         println!("rings {VERSION}");
         return;
     }
+    rings::update::cleanup_replaced_exe();
+    rings::update::maybe_offer_and_apply(&cli);
     if let Err(e) = run(cli) {
         eprintln!("rings: {e}");
         std::process::exit(1);
