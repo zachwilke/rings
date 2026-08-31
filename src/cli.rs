@@ -40,6 +40,7 @@ OPTIONS:
     --json               Write the analyzed tree as JSON to stdout and exit
     --csv <FILE>         Write findings CSV to FILE and exit (temp file, then rename)
     --plain, --no-tui    Print a parseable table to stdout and exit
+    --offline            Skip the GitHub Release update check
     --one-file-system    Stay on one filesystem (default)
     --all-filesystems    Descend into other mounted filesystems
     --apparent           Size by apparent bytes (st_size) instead of used
@@ -49,6 +50,10 @@ OPTIONS:
 When stdout is not a terminal (piped or redirected), rings prints the
 plain table instead of opening the TUI. --csv, --json, and --plain
 never enter the TUI, even in a terminal.
+
+An interactive TUI launch checks GitHub Releases for a newer rings and
+offers to install it. --offline or RINGS_NO_UPDATE=1 skips the check.
+Pipes, --plain, --json, --csv, --help, and --version never check.
 
 Full-disk scan:
 
@@ -92,6 +97,7 @@ pub struct Cli {
     pub plain: bool,
     pub all_filesystems: bool,
     pub apparent: bool,
+    pub offline: bool,
     pub help: bool,
     pub version: bool,
 }
@@ -110,6 +116,7 @@ impl Cli {
                     cli.csv = Some(PathBuf::from(file));
                 }
                 "--plain" | "--no-tui" => cli.plain = true,
+                "--offline" => cli.offline = true,
                 "--one-file-system" => cli.all_filesystems = false,
                 "--all-filesystems" => cli.all_filesystems = true,
                 "--apparent" => cli.apparent = true,
@@ -179,6 +186,10 @@ mod tests {
         let cli = parse(&["--no-tui"]).unwrap();
         assert!(cli.plain);
 
+        let cli = parse(&["--offline", "/"]).unwrap();
+        assert!(cli.offline);
+        assert_eq!(cli.path, Some(PathBuf::from("/")));
+
         let cli = parse(&["help"]).unwrap();
         assert!(cli.help);
     }
@@ -218,6 +229,9 @@ mod tests {
             "double-click",
             "--plain",
             "--no-tui",
+            "--offline",
+            "GitHub Release",
+            "RINGS_NO_UPDATE",
             "rings help",
         ] {
             assert!(text.contains(needle), "help missing {needle:?}:\n{text}");
