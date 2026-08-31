@@ -19,3 +19,15 @@ jobs:
 
       - name: Test
         run: cargo test
+
+      - name: Syntax-check install.sh
+        if: runner.os != 'Windows'
+        run: sh -n install.sh
+
+      - name: Parse install.ps1
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $errs = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $pwd 'install.ps1'), [ref]$null, [ref]$errs)
+          if ($errs.Count -gt 0) { $errs | ForEach-Object { $_.ToString() }; exit 1 }
