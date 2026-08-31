@@ -21,7 +21,17 @@ pub const SPECIAL_SKIP_PATHS: &[&str] = &["/proc", "/sys", "/dev", "/run"];
 /// Exact paths that must never be deleted.
 #[cfg(unix)]
 pub const SAFEGUARD_EXACT: &[&str] = &[
-    "/", "/boot", "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/System", "/private",
+    "/",
+    "/boot",
+    "/etc",
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib64",
+    "/System",
+    "/private",
+    "/private/etc",
 ];
 
 /// Prefixes (must include trailing slash) that must never be deleted.

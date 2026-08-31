@@ -222,8 +222,8 @@ pub fn meta_ino(meta: &Metadata) -> u64 {
     }
     #[cfg(windows)]
     {
-        let _ = meta;
-        0
+        use std::os::windows::fs::MetadataExt;
+        meta.file_index().unwrap_or(0)
     }
 }
 
@@ -235,8 +235,8 @@ pub fn meta_nlink(meta: &Metadata) -> u64 {
     }
     #[cfg(windows)]
     {
-        let _ = meta;
-        1
+        use std::os::windows::fs::MetadataExt;
+        meta.number_of_links().unwrap_or(1) as u64
     }
 }
 

@@ -13,53 +13,44 @@ pub struct SafeguardRefuse {
 
 pub fn refuse_reason(path: &Path) -> Option<SafeguardRefuse> {
     let canon = canonicalize_best_effort(path);
-    let raw = display_abs(&canon);
+    // macOS: `/etc` canonicalizes to `/private/etc`. Check both spellings.
+    let presented = display_abs(path);
+    let resolved = display_abs(&canon);
 
-    if is_system_root(&raw) {
-        return Some(SafeguardRefuse {
-            path: canon,
-            reason: format!("{raw} is a safeguarded system path"),
-        });
-    }
-
-    #[cfg(unix)]
-    {
-        for exact in SAFEGUARD_EXACT {
-            if path_eq(&raw, exact) {
-                return Some(SafeguardRefuse {
-                    path: canon,
-                    reason: format!("{exact} is a safeguarded system path"),
-                });
-            }
-        }
-        for prefix in SAFEGUARD_PREFIXES {
-            if path_starts(&raw, prefix) {
-                return Some(SafeguardRefuse {
-                    path: canon.clone(),
-                    reason: format!(
-                        "{raw} is under safeguarded prefix {}",
-                        prefix.trim_end_matches('/')
-                    ),
-                });
-            }
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        if let Some(reason) = windows_refuse(&raw) {
+    for raw in [&presented, &resolved] {
+        if is_system_root(raw) {
             return Some(SafeguardRefuse {
                 path: canon,
+                reason: format!("{raw} is a safeguarded system path"),
+            });
+        }
+
+        #[cfg(unix)]
+        {
+            if let Some(reason) = unix_refuse(raw) {
+                return Some(SafeguardRefuse {
+                    path: canon,
+                    reason,
+                });
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            if let Some(reason) = windows_refuse(raw) {
+                return Some(SafeguardRefuse {
+                    path: canon,
+                    reason,
+                });
+            }
+        }
+
+        if let Some(reason) = kernel_refuse(raw) {
+            return Some(SafeguardRefuse {
+                path: canon.clone(),
                 reason,
             });
         }
-    }
-
-    if let Some(reason) = kernel_refuse(&raw) {
-        return Some(SafeguardRefuse {
-            path: canon.clone(),
-            reason,
-        });
     }
 
     if let Ok(exe) = std::env::current_exe() {
@@ -135,6 +126,22 @@ fn path_eq(a: &str, b: &str) -> bool {
     } else {
         a == b
     }
+}
+
+#[cfg(unix)]
+fn unix_refuse(raw: &str) -> Option<String> {
+    for exact in SAFEGUARD_EXACT {
+        if path_eq(raw, exact) {
+            return Some(format!("{exact} is a safeguarded system path"));
+        }
+    }
+    for prefix in SAFEGUARD_PREFIXES {
+        let base = prefix.trim_end_matches('/');
+        if path_eq(raw, base) || path_starts(raw, prefix) {
+            return Some(format!("{raw} is under safeguarded prefix {base}"));
+        }
+    }
+    None
 }
 
 fn path_starts(a: &str, prefix: &str) -> bool {
