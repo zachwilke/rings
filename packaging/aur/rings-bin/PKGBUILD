@@ -1,0 +1,26 @@
+# Maintainer: Zach Wilke <zach@pinefall.dev>
+# Binary package: wraps the static musl GitHub Release, no rust/cargo.
+pkgname=rings-bin
+pkgver=0.2.0
+pkgrel=1
+pkgdesc="DaisyDisk-style disk usage TUI"
+arch=('x86_64' 'aarch64' 'armv7h')
+url="https://github.com/zachwilke/rings"
+license=('MIT')
+provides=('rings')
+conflicts=('rings')
+options=('!strip' '!debug')
+# Rename each arch asset to rings.xz so xz -d yields a file named rings.
+source_x86_64=("rings.xz::https://github.com/zachwilke/rings/releases/download/v${pkgver}/rings-x86_64-linux-musl.xz")
+source_aarch64=("rings.xz::https://github.com/zachwilke/rings/releases/download/v${pkgver}/rings-aarch64-linux-musl.xz")
+source_armv7h=("rings.xz::https://github.com/zachwilke/rings/releases/download/v${pkgver}/rings-armv7-linux-musleabihf.xz")
+source=("LICENSE::https://raw.githubusercontent.com/zachwilke/rings/v${pkgver}/LICENSE")
+sha256sums=('7d6bbd30b08d7d81fd006d07e78daf0f73fe24ec36ec44e85ac1e13d74b58a49')
+sha256sums_x86_64=('b64c07fd6f3c3827646e016476d119e68188319cd939a3796f8605cf821ef4e1')
+sha256sums_aarch64=('95647a952c37ce97e481cea5d76fedcd02a1f63b7ff62da6199691f66b25ed9e')
+sha256sums_armv7h=('66f6c042c69c92e20742feba6238be479a785ab2c0ad3f1a26225134ea89d77c')
+
+package() {
+	install -Dm755 rings "$pkgdir/usr/bin/rings"
+	install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
