@@ -177,7 +177,13 @@ fn tag_cluster(tree: &mut Tree, root: usize, opts: &Options) -> postgres::Cluste
                 }
                 Role::TempSpill => cluster.temp_bytes = cluster.temp_bytes.saturating_add(own),
                 Role::Log => cluster.log_bytes = cluster.log_bytes.saturating_add(own),
-                Role::Meta => cluster.meta_bytes = cluster.meta_bytes.saturating_add(own),
+                // `postgres::top_role` yields neither of these — they exist
+                // for engines with replication logs and on-disk backups.
+                // Counted as metadata anyway so the per-role totals keep
+                // summing to the subtree if that ever changes.
+                Role::Meta | Role::Binlog | Role::Backup => {
+                    cluster.meta_bytes = cluster.meta_bytes.saturating_add(own)
+                }
             }
 
             if tree.nodes[c].is_dir {
