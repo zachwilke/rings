@@ -30,7 +30,236 @@ pub struct Theme {
     pub crash: Rgb,
 }
 
-/// The default look: deep navy, lime accent, ten saturated slice hues.
+/// The default: Tokyo Night, the storm-lit navy that most terminals
+/// already wear. Blue-violet ground, ten saturated hues, green accent.
+pub const TOKYO_NIGHT: Theme = Theme {
+    name: "tokyo-night",
+    bg: Rgb(26, 27, 38),
+    panel: Rgb(36, 40, 59),
+    text: Rgb(192, 202, 245),
+    muted: Rgb(86, 95, 137),
+    accent: Rgb(158, 206, 106),
+    warn: Rgb(224, 175, 104),
+    danger: Rgb(247, 118, 142),
+    select_bg: Rgb(40, 52, 87),
+    smaller: Rgb(59, 66, 97),
+    chip: Rgb(41, 46, 66),
+    palette: [
+        Rgb(122, 162, 247),
+        Rgb(125, 207, 255),
+        Rgb(187, 154, 247),
+        Rgb(158, 206, 106),
+        Rgb(255, 158, 100),
+        Rgb(247, 118, 142),
+        Rgb(115, 218, 202),
+        Rgb(157, 124, 216),
+        Rgb(224, 175, 104),
+        Rgb(42, 195, 222),
+    ],
+    temp: Rgb(255, 158, 100),
+    cache: Rgb(125, 207, 255),
+    log: Rgb(157, 124, 216),
+    journal: Rgb(187, 154, 247),
+    crash: Rgb(247, 118, 142),
+};
+
+/// Tokyo Night with the lighter Storm ground, for screens where the
+/// standard variant reads as flat black.
+pub const TOKYO_NIGHT_STORM: Theme = Theme {
+    name: "tokyo-night-storm",
+    bg: Rgb(36, 40, 59),
+    panel: Rgb(41, 46, 66),
+    text: Rgb(192, 202, 245),
+    muted: Rgb(86, 95, 137),
+    accent: Rgb(158, 206, 106),
+    warn: Rgb(224, 175, 104),
+    danger: Rgb(247, 118, 142),
+    select_bg: Rgb(46, 60, 100),
+    smaller: Rgb(59, 66, 97),
+    chip: Rgb(52, 58, 82),
+    palette: [
+        Rgb(122, 162, 247),
+        Rgb(125, 207, 255),
+        Rgb(187, 154, 247),
+        Rgb(158, 206, 106),
+        Rgb(255, 158, 100),
+        Rgb(247, 118, 142),
+        Rgb(115, 218, 202),
+        Rgb(157, 124, 216),
+        Rgb(224, 175, 104),
+        Rgb(42, 195, 222),
+    ],
+    temp: Rgb(255, 158, 100),
+    cache: Rgb(125, 207, 255),
+    log: Rgb(157, 124, 216),
+    journal: Rgb(187, 154, 247),
+    crash: Rgb(247, 118, 142),
+};
+
+/// Tokyo Night Day: the light variant. The only pale built-in, and the
+/// one that proves the fade, emphasis, and label-contrast helpers are not
+/// quietly assuming a dark ground.
+pub const TOKYO_NIGHT_DAY: Theme = Theme {
+    name: "tokyo-night-day",
+    bg: Rgb(225, 226, 231),
+    panel: Rgb(208, 213, 227),
+    text: Rgb(55, 96, 191),
+    muted: Rgb(132, 140, 181),
+    accent: Rgb(88, 117, 57),
+    warn: Rgb(140, 108, 62),
+    danger: Rgb(245, 42, 101),
+    select_bg: Rgb(183, 193, 227),
+    smaller: Rgb(168, 174, 203),
+    chip: Rgb(196, 200, 218),
+    palette: [
+        Rgb(46, 125, 233),
+        Rgb(0, 113, 151),
+        Rgb(152, 84, 241),
+        Rgb(88, 117, 57),
+        Rgb(177, 92, 0),
+        Rgb(245, 42, 101),
+        Rgb(17, 140, 116),
+        Rgb(120, 71, 189),
+        Rgb(140, 108, 62),
+        Rgb(97, 114, 176),
+    ],
+    temp: Rgb(177, 92, 0),
+    cache: Rgb(0, 113, 151),
+    log: Rgb(120, 71, 189),
+    journal: Rgb(152, 84, 241),
+    crash: Rgb(245, 42, 101),
+};
+
+/// Catppuccin Mocha: soft pastels on a warm charcoal.
+pub const CATPPUCCIN: Theme = Theme {
+    name: "catppuccin",
+    bg: Rgb(30, 30, 46),
+    panel: Rgb(49, 50, 68),
+    text: Rgb(205, 214, 244),
+    muted: Rgb(108, 112, 134),
+    accent: Rgb(166, 227, 161),
+    warn: Rgb(249, 226, 175),
+    danger: Rgb(243, 139, 168),
+    select_bg: Rgb(69, 71, 90),
+    smaller: Rgb(88, 91, 112),
+    chip: Rgb(49, 50, 68),
+    palette: [
+        Rgb(203, 166, 247),
+        Rgb(137, 220, 235),
+        Rgb(250, 179, 135),
+        Rgb(166, 227, 161),
+        Rgb(243, 139, 168),
+        Rgb(137, 180, 250),
+        Rgb(245, 194, 231),
+        Rgb(148, 226, 213),
+        Rgb(249, 226, 175),
+        Rgb(180, 190, 254),
+    ],
+    temp: Rgb(250, 179, 135),
+    cache: Rgb(137, 220, 235),
+    log: Rgb(203, 166, 247),
+    journal: Rgb(245, 194, 231),
+    crash: Rgb(243, 139, 168),
+};
+
+/// Rose Pine: muted plum and foam, low saturation throughout.
+pub const ROSE_PINE: Theme = Theme {
+    name: "rose-pine",
+    bg: Rgb(25, 23, 36),
+    panel: Rgb(38, 35, 58),
+    text: Rgb(224, 222, 244),
+    muted: Rgb(110, 106, 134),
+    accent: Rgb(156, 207, 216),
+    warn: Rgb(246, 193, 119),
+    danger: Rgb(235, 111, 146),
+    select_bg: Rgb(64, 61, 82),
+    smaller: Rgb(82, 79, 103),
+    chip: Rgb(38, 35, 58),
+    palette: [
+        Rgb(196, 167, 231),
+        Rgb(156, 207, 216),
+        Rgb(246, 193, 119),
+        Rgb(235, 188, 186),
+        Rgb(235, 111, 146),
+        Rgb(86, 148, 159),
+        Rgb(144, 140, 170),
+        Rgb(215, 130, 126),
+        Rgb(170, 150, 220),
+        Rgb(62, 143, 176),
+    ],
+    temp: Rgb(246, 193, 119),
+    cache: Rgb(156, 207, 216),
+    log: Rgb(196, 167, 231),
+    journal: Rgb(235, 188, 186),
+    crash: Rgb(235, 111, 146),
+};
+
+/// Everforest Dark: desaturated green-grey, easy over long sessions.
+pub const EVERFOREST: Theme = Theme {
+    name: "everforest",
+    bg: Rgb(45, 53, 59),
+    panel: Rgb(52, 63, 68),
+    text: Rgb(211, 198, 170),
+    muted: Rgb(133, 146, 137),
+    accent: Rgb(167, 192, 128),
+    warn: Rgb(219, 188, 127),
+    danger: Rgb(230, 126, 128),
+    select_bg: Rgb(61, 72, 77),
+    smaller: Rgb(79, 88, 94),
+    chip: Rgb(61, 72, 77),
+    palette: [
+        Rgb(167, 192, 128),
+        Rgb(131, 192, 146),
+        Rgb(219, 188, 127),
+        Rgb(127, 187, 179),
+        Rgb(230, 152, 117),
+        Rgb(230, 126, 128),
+        Rgb(214, 153, 182),
+        Rgb(154, 166, 160),
+        Rgb(200, 170, 110),
+        Rgb(160, 180, 200),
+    ],
+    temp: Rgb(230, 152, 117),
+    cache: Rgb(131, 192, 146),
+    log: Rgb(214, 153, 182),
+    journal: Rgb(127, 187, 179),
+    crash: Rgb(230, 126, 128),
+};
+
+/// One Dark: the Atom palette, familiar from a decade of editors.
+pub const ONE_DARK: Theme = Theme {
+    name: "one-dark",
+    bg: Rgb(40, 44, 52),
+    panel: Rgb(49, 53, 63),
+    text: Rgb(171, 178, 191),
+    muted: Rgb(92, 99, 112),
+    accent: Rgb(152, 195, 121),
+    warn: Rgb(229, 192, 123),
+    danger: Rgb(224, 108, 117),
+    select_bg: Rgb(62, 68, 81),
+    smaller: Rgb(75, 82, 99),
+    chip: Rgb(58, 63, 75),
+    palette: [
+        Rgb(97, 175, 239),
+        Rgb(86, 182, 194),
+        Rgb(198, 120, 221),
+        Rgb(152, 195, 121),
+        Rgb(209, 154, 102),
+        Rgb(224, 108, 117),
+        Rgb(229, 192, 123),
+        Rgb(130, 170, 255),
+        Rgb(110, 200, 180),
+        Rgb(190, 140, 200),
+    ],
+    temp: Rgb(209, 154, 102),
+    cache: Rgb(86, 182, 194),
+    log: Rgb(198, 120, 221),
+    journal: Rgb(97, 175, 239),
+    crash: Rgb(224, 108, 117),
+};
+
+/// The original rings look: deep navy, lime accent. Was the default
+/// through 0.2; kept because it is what the README screenshot shows.
 pub const RINGS: Theme = Theme {
     name: "rings",
     bg: Rgb(14, 20, 34),
@@ -218,7 +447,21 @@ pub const MONO: Theme = Theme {
     crash: Rgb(255, 255, 255),
 };
 
-pub const BUILTIN: [Theme; 6] = [RINGS, NORD, GRUVBOX, DRACULA, SOLARIZED, MONO];
+pub const BUILTIN: [Theme; 13] = [
+    TOKYO_NIGHT,
+    TOKYO_NIGHT_STORM,
+    TOKYO_NIGHT_DAY,
+    CATPPUCCIN,
+    ROSE_PINE,
+    EVERFOREST,
+    ONE_DARK,
+    RINGS,
+    NORD,
+    GRUVBOX,
+    DRACULA,
+    SOLARIZED,
+    MONO,
+];
 
 // Per thread: only the UI thread draws, and it keeps each test isolated.
 thread_local! {
@@ -255,6 +498,25 @@ impl Theme {
     pub fn hover_bg(&self) -> Rgb {
         mix(self.bg, self.select_bg, 0.4)
     }
+
+    /// True for a pale ground. Three helpers below have to know which way
+    /// "recede" and "stand out" point; deriving it from `bg` means a new
+    /// theme cannot forget to declare it.
+    pub fn is_light(&self) -> bool {
+        luma(self.bg) > 128.0
+    }
+}
+
+/// Rec. 601 luminance. Cheap, and accurate enough to decide whether a colour
+/// reads as light or dark.
+pub fn luma(c: Rgb) -> f32 {
+    0.2126 * f32::from(c.0) + 0.7152 * f32::from(c.1) + 0.0722 * f32::from(c.2)
+}
+
+/// Linear blend. Public so hot loops can pass a background they already
+/// hold instead of re-reading the active theme per sample.
+pub fn blend(a: Rgb, b: Rgb, t: f32) -> Rgb {
+    mix(a, b, t.clamp(0.0, 1.0))
 }
 
 fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
@@ -262,16 +524,28 @@ fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
     Rgb(lerp(a.0, b.0), lerp(a.1, b.1), lerp(a.2, b.2))
 }
 
-/// Fade so the outermost ring stays readable (~0.62) at 4 rings or 8.
-pub fn dim_color(color: Rgb, ring: usize, rings: usize) -> Rgb {
-    let Rgb(r, g, b) = color;
+/// How far the deepest ring fades into the background.
+pub const DIM_MAX: f32 = 0.38;
+
+/// Fraction of the way to the background at `ring`.
+pub fn dim_t(ring: usize, rings: usize) -> f32 {
     let last = rings.saturating_sub(1).max(1) as f32;
-    let keep = 1.0 - 0.38 * (ring as f32 / last).min(1.0);
-    Rgb(
-        (r as f32 * keep) as u8,
-        (g as f32 * keep) as u8,
-        (b as f32 * keep) as u8,
-    )
+    DIM_MAX * (ring as f32 / last).min(1.0)
+}
+
+/// Blend `color` `t` of the way into the active background.
+pub fn toward_bg(color: Rgb, t: f32) -> Rgb {
+    mix(color, current().bg, t.clamp(0.0, 1.0))
+}
+
+/// Fade so the outermost ring recedes.
+///
+/// Blends toward the theme's *background* rather than toward black. On a
+/// light theme darkening is what makes a wedge more prominent, so the old
+/// multiply inverted the depth cue there; on a dark theme the two are
+/// nearly the same thing.
+pub fn dim_color(color: Rgb, ring: usize, rings: usize) -> Rgb {
+    toward_bg(color, dim_t(ring, rings))
 }
 
 /// 1-pixel-dark wedge edge: keep the hue, drop the value.
@@ -284,13 +558,25 @@ pub fn separator_color(color: Rgb) -> Rgb {
     )
 }
 
-pub fn brighten(color: Rgb) -> Rgb {
+/// Pull a colour *away* from the ground so it reads as selected: lighter on
+/// a dark theme, darker on a light one. Unconditionally brightening would
+/// wash a selection out on a pale ground.
+pub fn emphasize(color: Rgb) -> Rgb {
+    const STEP: u8 = 40;
     let Rgb(r, g, b) = color;
-    Rgb(
-        r.saturating_add(40),
-        g.saturating_add(40),
-        b.saturating_add(40),
-    )
+    if current().is_light() {
+        Rgb(
+            r.saturating_sub(STEP),
+            g.saturating_sub(STEP),
+            b.saturating_sub(STEP),
+        )
+    } else {
+        Rgb(
+            r.saturating_add(STEP),
+            g.saturating_add(STEP),
+            b.saturating_add(STEP),
+        )
+    }
 }
 
 pub fn category_color(cat: crate::classify::Category) -> Rgb {
@@ -306,6 +592,35 @@ pub fn category_color(cat: crate::classify::Category) -> Rgb {
     }
 }
 
+/// Colour by what can be done about the space rather than by what it is:
+/// red for files rings will refuse to delete, amber for space a command
+/// gives back, green for ordinary waste.
+/// Readable ink for text written *on* a filled cell.
+///
+/// The icicle paints slice colours as backgrounds, which no view did before,
+/// so a label has to pick a side: whichever of the theme's text and ground
+/// sits further away in luminance. Choosing `text` unconditionally vanishes
+/// on a pale wedge; choosing `bg` unconditionally vanishes on a light theme.
+pub fn contrast_on(fill: Rgb) -> Rgb {
+    let th = current();
+    let target = luma(fill);
+    if (luma(th.text) - target).abs() >= (luma(th.bg) - target).abs() {
+        th.text
+    } else {
+        th.bg
+    }
+}
+
+pub fn tone_color(tone: crate::apps::Tone) -> Rgb {
+    use crate::apps::Tone::*;
+    let th = current();
+    match tone {
+        Protected => th.danger,
+        Advisory => th.warn,
+        Reclaimable => th.accent,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,36 +631,139 @@ mod tests {
         for (i, name) in names.iter().enumerate() {
             assert_eq!(names.iter().filter(|n| *n == name).count(), 1, "{name}");
             assert_eq!(BUILTIN[i].name, *name);
+            set(name).unwrap_or_else(|e| panic!("{name}: {e}"));
         }
-        assert_eq!(names[0], "rings", "the default stays first");
+        assert_eq!(names[0], "tokyo-night", "the default comes first");
+        assert!(names.len() >= 13, "a variety, not a token second option");
+        set("tokyo-night").unwrap();
+    }
+
+    #[test]
+    fn names_are_stable_slugs() {
+        for t in BUILTIN {
+            assert!(
+                t.name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b == b'-' || b.is_ascii_digit()),
+                "{} is not a typeable slug",
+                t.name
+            );
+        }
     }
 
     #[test]
     fn unknown_theme_lists_the_choices() {
         let err = set("neon-hotdog").unwrap_err();
+        assert!(err.contains("tokyo-night"), "{err}");
         assert!(err.contains("nord"), "{err}");
-        assert!(err.contains("gruvbox"), "{err}");
         assert!(err.contains("mono"), "{err}");
     }
 
     #[test]
     fn every_theme_keeps_text_readable_on_its_backgrounds() {
-        fn luma(c: Rgb) -> f32 {
-            0.2126 * c.0 as f32 + 0.7152 * c.1 as f32 + 0.0722 * c.2 as f32
-        }
         for t in BUILTIN {
             for bg in [t.bg, t.panel, t.select_bg, t.hover_bg(), t.chip] {
                 assert!(
-                    luma(t.text) - luma(bg) > 90.0,
+                    (luma(t.text) - luma(bg)).abs() > 90.0,
                     "{}: text on {bg:?} too close",
                     t.name
                 );
             }
+            // Hover is a whisper of the selection: nearer the ground than
+            // `select_bg` is, whichever direction that happens to be.
             assert!(
-                luma(t.hover_bg()) < luma(t.select_bg),
-                "{}: hover is subtler",
+                (luma(t.hover_bg()) - luma(t.bg)).abs() < (luma(t.select_bg) - luma(t.bg)).abs(),
+                "{}: hover is subtler than selection",
                 t.name
             );
         }
+    }
+
+    #[test]
+    fn every_theme_labels_its_own_fills_legibly() {
+        // The icicle paints slice colours as *backgrounds*, which no view
+        // did before. A palette that only ever had to work as foreground
+        // text can fail this, so every hue of every theme is checked.
+        for t in BUILTIN {
+            set(t.name).unwrap();
+            let mut fills = t.palette.to_vec();
+            fills.extend_from_slice(&[
+                t.temp, t.cache, t.log, t.journal, t.crash, t.accent, t.warn, t.danger,
+            ]);
+            for fill in fills {
+                let ink = contrast_on(fill);
+                assert!(
+                    (luma(ink) - luma(fill)).abs() > 80.0,
+                    "{}: {fill:?} labelled with {ink:?} would be unreadable",
+                    t.name
+                );
+            }
+        }
+        set("tokyo-night").unwrap();
+    }
+
+    #[test]
+    fn exactly_one_builtin_has_a_pale_ground() {
+        let light: Vec<&str> = BUILTIN
+            .iter()
+            .filter(|t| t.is_light())
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(
+            light,
+            vec!["tokyo-night-day"],
+            "the light variant is what proves the helpers are not assuming dark"
+        );
+    }
+
+    #[test]
+    fn dimming_recedes_toward_the_ground_on_light_and_dark_alike() {
+        for name in ["tokyo-night", "tokyo-night-day"] {
+            set(name).unwrap();
+            let th = current();
+            let c = th.palette[0];
+            let near = dim_color(c, 0, 8);
+            let far = dim_color(c, 7, 8);
+            assert_eq!(near, c, "{name}: the innermost ring is undimmed");
+            assert!(
+                (luma(far) - luma(th.bg)).abs() < (luma(near) - luma(th.bg)).abs(),
+                "{name}: depth must move a wedge toward the ground, not away"
+            );
+        }
+        set("tokyo-night").unwrap();
+    }
+
+    #[test]
+    fn emphasis_moves_away_from_the_ground_in_both_directions() {
+        set("tokyo-night").unwrap();
+        let c = current().palette[0];
+        assert!(
+            luma(emphasize(c)) > luma(c),
+            "on a dark ground a selection lightens"
+        );
+
+        set("tokyo-night-day").unwrap();
+        let c = current().palette[0];
+        assert!(
+            luma(emphasize(c)) < luma(c),
+            "on a pale ground it has to darken instead"
+        );
+        set("tokyo-night").unwrap();
+    }
+
+    #[test]
+    fn contrast_on_flips_with_the_ground() {
+        // The same mid-tone fill wants opposite ink on opposite themes.
+        let fill = Rgb(120, 120, 120);
+        set("tokyo-night").unwrap();
+        let dark_ink = contrast_on(fill);
+        set("tokyo-night-day").unwrap();
+        let light_ink = contrast_on(fill);
+        assert_ne!(
+            luma(dark_ink) > luma(fill),
+            luma(light_ink) > luma(fill),
+            "ink must pick opposite sides on opposite grounds"
+        );
+        set("tokyo-night").unwrap();
     }
 }

@@ -30,6 +30,17 @@ fn write_node(out: &mut String, tree: &Tree, id: usize, depth: usize) {
         quote(&human_bytes(n.used))
     ));
     out.push_str(&format!("{inner}\"category\": \"{}\",\n", n.category));
+    if let Some(tag) = n.app {
+        out.push_str(&format!(
+            "{inner}\"application\": \"{}\",\n",
+            tag.kind.as_str()
+        ));
+        out.push_str(&format!("{inner}\"role\": \"{}\",\n", tag.role.as_str()));
+        out.push_str(&format!(
+            "{inner}\"reclaim\": \"{}\",\n",
+            tag.reclaim().as_str()
+        ));
+    }
     let kids: Vec<usize> = n
         .children
         .iter()

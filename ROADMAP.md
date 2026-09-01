@@ -51,10 +51,13 @@ the mouse does what you expect, and it looks deliberate.
   buttons 64/65 — currently masked out in `term/input.rs`). Motion
   tracking (`?1003h`) for hover highlight on slices, rows, and chips.
   Hover tooltip on a slice: name · size · % of parent.
-- **Theme engine** (M). `Theme` struct replaces the consts in
-  `tui/theme.rs`; a `--theme` flag; built-ins: `rings` (current), `nord`,
-  `gruvbox`, `dracula`, `solarized-dark`, `mono` (for 16-color TTYs).
-  Detect true-color (`COLORTERM`), fall back to 256, then 16. `NO_COLOR`.
+- **Theme engine** (M) — *done; 13 built-ins as of 2026-09-01*.
+  `tokyo-night` is the default, with `-storm` and `-day` variants, plus
+  `catppuccin`, `rose-pine`, `everforest`, `one-dark`, and the originals
+  (`rings`, `nord`, `gruvbox`, `dracula`, `solarized-dark`, `mono`).
+  `--help` lists them from the registry, so a new built-in cannot leave the
+  docs stale. Detect true-color (`COLORTERM`), fall back to 256, then 16.
+  `NO_COLOR`. See Decision 7 for what a theme now has to satisfy.
 - **Layout primitives** (M). `Rect::split_h/split_v`, a `Box` widget with
   btop-style rounded corners and titled border, used by every view so
   the picker, findings, collector, and details pane share one chrome.
@@ -102,6 +105,22 @@ lets you dive in.
 Goal: rings knows what is safe to reclaim on a developer machine, a
 server, and a Pi, and shows you *why*.
 
+- **Application awareness** (M) — *first pass landed*. PostgreSQL clusters
+  (by `PG_VERSION` + `base/` + `global/`, so packaging layout does not
+  matter) and SQLite databases (by header magic, because the extension is
+  useless). Every file gets a *role* — data, wal, spill, log, meta — and
+  each role a *disposition*: `Never`, `Command`, or `Safe`. The point is
+  that for a database the answer is almost never "delete this": it is
+  VACUUM, or a checkpoint, or raising `work_mem`. Live data is refused by
+  the delete safeguard, and the refusal propagates *up* the tree so the
+  untagged parent a user actually selects is refused too.
+  MySQL/MariaDB (datadir by `ibdata1`; binary logs are the headline —
+  `PURGE BINARY LOGS`, never `rm`, which orphans the `.index` and breaks
+  replicas) and SQL Server (`.mdf`/`.ndf`/`.ldf` by extension, since it has
+  no canonical datadir; a `.ldf` several times its `.mdf` is the classic
+  disk-full call) both landed alongside PostgreSQL and SQLite.
+  *Next:* MongoDB, Elasticsearch, Redis, Docker overlay2.
+  *Also next:* colour by disposition, not just by category.
 - **Extended detectors** (M). Beyond temp/cache/log: `node_modules`,
   `target/`, `.venv`/`venv`, `__pycache__`, `.gradle`, `.m2`, Xcode
   `DerivedData` + simulators, Homebrew cache, npm/yarn/pnpm/pip/cargo
@@ -152,8 +171,14 @@ and mistakes are recoverable.
 
 Goal: the README screenshot sells it, and `brew install rings` works.
 
-- **Treemap layout** (L). `L` toggles sunburst ↔ squarified treemap;
-  same hit-testing contract as slices.
+- **Alternative layouts** (M) — *icicle landed 2026-09-01, see Decision 6*.
+  `L` toggles sunburst ↔ icicle. The icicle takes the full width with the
+  child list beneath it, writes names inside the bars, and shrinks to the
+  tree's actual depth; bodies too short for a map degrade to list-only for
+  free. A treemap remains possible but is a distant third — see the
+  decision for why.
+  *Next:* remember the layout in the config file, and pick the icicle
+  automatically under ~70 columns where the disc stops being readable.
 - **Layout presets** (M). Sunburst+list (default), list-only (auto under
   70 cols), dual-pane (two directories side by side for moving/compare).
   Boxes toggleable like btop's `1`–`4`.
@@ -200,4 +225,57 @@ every color with fresh eyes. Nothing new.
    notice, `--no-cache` to opt out. Root scans describe the whole
    filesystem, so the cache location is root-only.
 4. **Duplicates finder is opt-in** and behind a progress bar; it is the
-   only feature that reads file contents.
+   only feature that reads *whole* file contents.
+7. **A theme is a contract, not a colour list** (settled 2026-09-01).
+   The icicle paints palette colours as *backgrounds*, which nothing did
+   before it, and `tokyo-night-day` is the first pale ground. Between them
+   they broke three helpers that had quietly assumed a dark theme, so those
+   are now derived rather than hard-coded:
+   - `dim_color` fades toward `bg`, not toward black. On a light theme,
+     darkening makes a wedge *more* prominent, so the old multiply
+     inverted the depth cue.
+   - `brighten` became `emphasize`, moving *away* from the ground —
+     lighter on dark, darker on light.
+   - `contrast_on` picks whichever of `text`/`bg` is further away in
+     luminance. Choosing either unconditionally makes a label vanish:
+     `text` on a pale wedge, `bg` on a pale theme.
+   Every built-in is held to four properties by test: text/surface
+   luminance gap > 90, hover nearer the ground than selection, *every*
+   palette and category hue legible when used as a label background
+   (> 80), and slug-safe names. A new theme that fails any of them fails
+   the build rather than shipping an unreadable view.
+
+6. **The icicle is the second layout, not the treemap** (settled
+   2026-09-01, after prototyping all three at 78 columns).
+   - *The sunburst cannot show text.* Every wedge is anonymous, so the
+     eye has to round-trip through the side list. In a terminal, text is
+     the one thing we are unambiguously good at, and the current view
+     spends none of it.
+   - *An icicle is the sunburst unrolled.* `Slice { start, end, ring }`
+     already holds 0–1 fractions and a depth — that is an icicle spec
+     verbatim. `x = start × width`, `y = ring`. Hit testing needs no new
+     code either: `slice_at(slices, ring, angle)` takes only those two
+     values, so the polar transform in `polar()` is the *only*
+     sunburst-specific line in the whole path.
+   - *It costs a quarter of the space.* Four levels in four rows, versus
+     ~45×24 for ten rings with the corners and the centre hole wasted.
+     That buys back the room the details pane (0.2) needs.
+   - *Squarified treemaps reorder under streaming.* A child crossing a
+     strip boundary reshuffles its neighbours, which will flicker badly
+     against the streaming scan in 0.2. Icicle ordering is stable.
+     Bordered nested treemaps are also unreadable at 80 columns — the
+     borders eat the content; a filled treemap needs colour to work at
+     all, so it degrades worst on the 16-colour TTYs we support.
+   - The sunburst stays the default and the README image. It is the
+     product's face, and it is genuinely the best "shape at a glance"
+     view. This is about having a second layout, not replacing it.
+
+5. **Bounded header probes are exempt from (4)** (settled 2026-09-01).
+   Application detection may read at most 4 KB from the head of a file,
+   only for files past a size floor (1 MiB), capped at 4096 files per
+   scan. That is a different order of cost from hashing every file ≥1 MiB,
+   and it is the only way to report a real number: SQLite's 100-byte
+   header gives exactly what `VACUUM` would return. `--no-app-probe` turns
+   the reads off. Structural detection and the delete safeguards are *not*
+   behind that flag — protection must not be something a performance
+   switch can disable.

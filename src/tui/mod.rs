@@ -1,5 +1,6 @@
 mod app;
 mod draw;
+mod icicle;
 mod picker;
 mod sunburst;
 pub mod theme;
@@ -10,7 +11,7 @@ use std::sync::mpsc;
 use crate::scan::{spawn_scan, WalkEvent, WalkOptions};
 use crate::term::{self, Buffer, Event, Key, Rect, Term};
 
-use self::app::{Action, App, Hover, View};
+use self::app::{Action, App, Hover, Layout, View};
 use self::draw::HitMap;
 
 const POLL_MS: i32 = 80;
@@ -177,6 +178,14 @@ fn handle_key(app: &mut App, key: Key) {
         Key::Char(' ') | Key::Char('d') => app.toggle_mark_selected(),
         Key::Char('-') => app.open_picker_from_scan(),
         Key::Char('f') => app.open_findings(),
+        Key::Char('L') => app.cycle_layout(),
+        Key::Char('b') => {
+            if matches!(app.view, View::Databases) {
+                app.view = View::Browse;
+            } else {
+                app.open_databases();
+            }
+        }
         Key::Char('c') => app.open_collector(),
         Key::Char('x') => {
             if matches!(app.view, View::Collector) {
@@ -234,7 +243,13 @@ fn target_at(app: &App, hits: &HitMap, x: u16, y: u16) -> Option<Hover> {
     if let Some(n) = find(&hits.crumbs) {
         return Some(Hover::Crumb(n));
     }
-    if let Some(slice) = sunburst::hit_slice(&hits.slices, hits.sunburst, x, y) {
+    // Both layouts hand back the same `Slice` list; only the projection
+    // that put it on screen has to be undone.
+    let slice = match hits.layout {
+        Layout::Sunburst => sunburst::hit_slice(&hits.slices, hits.map, x, y),
+        Layout::Icicle => icicle::hit_slice(&hits.slices, hits.map, x, y),
+    };
+    if let Some(slice) = slice {
         return Some(Hover::Slice(slice.node));
     }
     find(&hits.rows).map(Hover::Row)
@@ -298,6 +313,7 @@ fn handle_click(app: &mut App, hits: &HitMap, x: u16, y: u16) {
 fn do_action(app: &mut App, action: Action) {
     match action {
         Action::Findings => app.open_findings(),
+        Action::Databases => app.open_databases(),
         Action::Collector => app.open_collector(),
         Action::Export => {
             if let Err(e) = app.export_current() {
@@ -393,7 +409,7 @@ mod tests {
         assert_eq!(app.selected, 1, "click should select the second row");
 
         // Click a slice: selection follows the sunburst.
-        let slice_area = hits.sunburst;
+        let slice_area = hits.map;
         let cx = slice_area.x + slice_area.width / 2;
         let cy = slice_area.y + 1; // top of the disk, ring area
         handle_click(&mut app, &hits, cx, cy);
@@ -1038,8 +1054,8 @@ mod tests {
 
         // The typed-phrase box sits over the sunburst; clicking it must not
         // select a slice, and double-clicking must not drill.
-        let cx = hits.sunburst.x + hits.sunburst.width / 2;
-        let cy = hits.sunburst.y + hits.sunburst.height / 2;
+        let cx = hits.map.x + hits.map.width / 2;
+        let cy = hits.map.y + hits.map.height / 2;
         handle_click(&mut app, &hits, cx, cy);
         handle_click(&mut app, &hits, cx, cy);
         assert!(matches!(app.view, View::Confirm { .. }), "still confirming");
@@ -1257,7 +1273,7 @@ mod tests {
         eprintln!(
             "{stem} dump {} slices rings_for={} → {} and {}",
             hits.slices.len(),
-            sunburst::rings_for(hits.sunburst),
+            sunburst::rings_for(hits.map),
             ppm.display(),
             text.display()
         );
@@ -1306,5 +1322,233 @@ mod tests {
             screen.contains('╭'),
             "nested rings on first paint:\n{screen}"
         );
+    }
+
+    /// Lay down a small but complete PostgreSQL data directory.
+    fn write_cluster(data: &std::path::Path) {
+        fs::create_dir_all(data.join("base").join("16384")).unwrap();
+        fs::create_dir_all(data.join("base").join("pgsql_tmp")).unwrap();
+        fs::create_dir_all(data.join("global")).unwrap();
+        fs::create_dir_all(data.join("pg_wal")).unwrap();
+        fs::write(data.join("PG_VERSION"), "16\n").unwrap();
+        // Table data is comfortably the largest thing here, so it sorts first.
+        fs::write(
+            data.join("base").join("16384").join("2836"),
+            vec![0u8; 262_144],
+        )
+        .unwrap();
+        fs::write(data.join("global").join("1262"), vec![0u8; 4096]).unwrap();
+        fs::write(
+            data.join("pg_wal").join("000000010000000000000001"),
+            vec![0u8; 8192],
+        )
+        .unwrap();
+        fs::write(
+            data.join("base").join("pgsql_tmp").join("pgsql_tmp1.0"),
+            vec![0u8; 8192],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn databases_view_names_the_engine_and_says_what_to_run() {
+        let th = theme::current();
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_cluster(&tmp.path().join("pgdata"));
+
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.set_tree(tree);
+        app.open_databases();
+
+        let mut buf = Buffer::new(110, 28, th.bg);
+        let hits = draw::draw(&mut buf, &app);
+        let screen = buf.text();
+
+        assert!(screen.contains("Databases"), "view title:\n{screen}");
+        assert!(screen.contains("postgres"), "engine column:\n{screen}");
+        assert!(screen.contains("data"), "role column:\n{screen}");
+        assert!(
+            screen.contains("VACUUM"),
+            "the detail line says what actually reclaims the space:\n{screen}"
+        );
+        assert!(!hits.rows.is_empty(), "rows must be hit-testable");
+        assert!(
+            hits.buttons.iter().any(|(_, a)| *a == Action::Databases),
+            "the Databases chip is clickable"
+        );
+    }
+
+    #[test]
+    fn marking_live_table_data_is_refused_but_spill_is_not() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_cluster(&tmp.path().join("pgdata"));
+
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.set_tree(tree);
+        app.open_databases();
+
+        let data_row = app
+            .databases
+            .iter()
+            .position(|e| e.role == crate::apps::Role::Data)
+            .expect("a base/ row");
+        app.databases_selected = data_row;
+        app.toggle_mark_selected();
+        assert!(
+            app.collector.is_empty(),
+            "live table data must never reach the collector"
+        );
+        assert!(app.status.contains("refused"), "status: {}", app.status);
+        assert!(
+            app.status.contains("VACUUM"),
+            "the refusal names the alternative: {}",
+            app.status
+        );
+
+        // Query spill inside the same cluster is ordinary waste.
+        let spill = app
+            .databases
+            .iter()
+            .position(|e| e.role == crate::apps::Role::TempSpill)
+            .expect("a pgsql_tmp row");
+        app.databases_selected = spill;
+        app.toggle_mark_selected();
+        assert_eq!(app.collector.len(), 1, "status: {}", app.status);
+    }
+
+    #[test]
+    fn a_new_scan_drops_the_collector_it_warned_about() {
+        // `picker_marks_warning` promises marks are dropped by a new scan.
+        // Before this they survived, holding node ids into a freed tree.
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::create_dir(tmp.path().join("junk")).unwrap();
+        fs::write(tmp.path().join("junk").join("big.tmp"), vec![b'x'; 8192]).unwrap();
+
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.set_tree(tree);
+        app.view = View::Browse;
+        app.toggle_mark_selected();
+        assert_eq!(app.collector.len(), 1, "something is marked");
+
+        app.begin_scan(tmp.path().to_path_buf());
+        assert!(
+            app.collector.is_empty(),
+            "a new scan drops marks, as the picker warning says it will"
+        );
+        assert!(app.databases.is_empty());
+        assert!(app.findings.is_empty());
+    }
+
+    #[test]
+    fn icicle_layout_writes_names_into_the_map_and_widens_the_list() {
+        let th = theme::current();
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.set_tree(tree);
+        app.view = View::Browse;
+
+        let mut buf = Buffer::new(100, 28, th.bg);
+        let sun = draw::draw(&mut buf, &app);
+        assert_eq!(sun.layout, Layout::Sunburst, "sunburst is still the default");
+
+        app.cycle_layout();
+        assert_eq!(app.layout, Layout::Icicle);
+        assert!(app.status.contains("icicle"), "the toggle says where it went");
+
+        let mut buf = Buffer::new(100, 28, th.bg);
+        let ice = draw::draw(&mut buf, &app);
+        let screen = buf.text();
+
+        assert_eq!(ice.layout, Layout::Icicle);
+        assert!(!ice.slices.is_empty(), "the same slice list drives both maps");
+        assert!(
+            ice.list.width > sun.list.width,
+            "the icicle gives the list the full width: {} vs {}",
+            ice.list.width,
+            sun.list.width
+        );
+
+        // The thing a sunburst structurally cannot do: names inside the map.
+        let map_rows: Vec<&str> = screen
+            .lines()
+            .skip(ice.map.y as usize)
+            .take(ice.map.height as usize)
+            .collect();
+        let map_text = map_rows.join("\n");
+        for name in ["usr", "var"] {
+            assert!(
+                map_text.contains(name),
+                "{name:?} should be written into the map itself:\n{map_text}"
+            );
+        }
+    }
+
+    #[test]
+    fn clicking_an_icicle_bar_selects_exactly_that_node() {
+        let th = theme::current();
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.set_tree(tree);
+        app.view = View::Browse;
+        app.cycle_layout();
+
+        let mut buf = Buffer::new(100, 28, th.bg);
+        let hits = draw::draw(&mut buf, &app);
+
+        let x = hits.map.x + hits.map.width / 4;
+        let y = hits.map.y;
+        let want = icicle::hit_slice(&hits.slices, hits.map, x, y)
+            .expect("a bar under the cursor")
+            .node;
+
+        handle_click(&mut app, &hits, x, y);
+        assert_eq!(
+            app.selected_node_id(),
+            Some(want),
+            "the click lands on the bar it was over"
+        );
+
+        // Hover uses the same lookup, so it must agree with the click.
+        assert_eq!(target_at(&app, &hits, x, y), Some(Hover::Slice(want)));
+    }
+
+    #[test]
+    fn a_short_body_drops_the_icicle_rather_than_squeezing_it() {
+        let th = theme::current();
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.set_tree(tree);
+        app.view = View::Browse;
+        app.cycle_layout();
+
+        // Header + 3-row footer leave almost nothing for the body.
+        let mut buf = Buffer::new(80, 9, th.bg);
+        let hits = draw::draw(&mut buf, &app);
+        let screen = buf.text();
+
+        assert_eq!(hits.map, crate::term::Rect::ZERO, "no map was drawn");
+        assert!(
+            !hits.rows.is_empty(),
+            "the list still renders on its own:\n{screen}"
+        );
+    }
+
+    #[test]
+    fn layout_toggles_back_to_the_sunburst() {
+        let mut app = App::new(std::path::PathBuf::from("."), false);
+        assert_eq!(app.layout, Layout::Sunburst);
+        app.cycle_layout();
+        assert_eq!(app.layout, Layout::Icicle);
+        app.cycle_layout();
+        assert_eq!(app.layout, Layout::Sunburst);
     }
 }

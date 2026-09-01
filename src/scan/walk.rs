@@ -6,6 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 
+use crate::apps;
 use crate::classify::classify;
 use crate::constants::PROGRESS_EVERY_ENTRIES;
 use crate::scan::skip::{is_special_path, skip_reason, SkipReason};
@@ -15,6 +16,8 @@ use crate::sys;
 #[derive(Clone, Debug)]
 pub struct WalkOptions {
     pub one_file_system: bool,
+    /// How much application analysis to do once the walk finishes.
+    pub apps: apps::Options,
     /// When set, treat this as the root device instead of the start path's `st_dev`.
     /// Used by tests to prove other-filesystem skipping without a bind mount.
     pub root_dev_override: Option<u64>,
@@ -24,6 +27,7 @@ impl Default for WalkOptions {
     fn default() -> Self {
         Self {
             one_file_system: true,
+            apps: apps::Options::default(),
             root_dev_override: None,
         }
     }
@@ -79,6 +83,7 @@ fn scan_inner(
         nodes: Vec::new(),
         root: 0,
         stats: ScanStats::default(),
+        probes: Vec::new(),
     };
     let mut seen_inodes: HashSet<(u64, u64)> = HashSet::new();
 
@@ -145,6 +150,7 @@ fn scan_inner(
     }
 
     tree.recompute();
+    apps::annotate(&mut tree, &opts.apps);
     if let Some(tx) = tx {
         let _ = tx.send(WalkEvent::Progress(Progress {
             files: tree.stats.files,
@@ -241,6 +247,8 @@ fn push_node(
     let node = Node {
         name,
         category: classify(&path),
+        app: None,
+        guard: None,
         path,
         parent,
         children: Vec::new(),
@@ -338,6 +346,7 @@ mod tests {
             WalkOptions {
                 one_file_system: true,
                 root_dev_override: Some(fake_dev),
+                ..WalkOptions::default()
             },
         )
         .unwrap();

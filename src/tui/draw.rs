@@ -1,17 +1,23 @@
 use std::borrow::Cow;
 
+use crate::apps::Tone;
 use crate::cli::{KeyGroup, HELP_COL_W, HELP_KEY_W, KEY_GROUPS};
 use crate::constants::{CHIP_GAP, DELETE_CONFIRM_PHRASE, FOOTER_H};
 use crate::delete::needs_typed_confirm;
 use crate::logo;
 use crate::size::{group_u64, human_bytes};
 use crate::term::{Buffer, Cell, Rect, Rgb};
-use crate::tui::app::{Action, App, Hover, Menu, MenuAction, View};
+use crate::tui::app::{node_label, Action, App, Hover, Layout, Menu, MenuAction, View};
+use crate::tui::icicle;
 use crate::tui::sunburst::{self, Slice};
 use crate::tui::theme::{self, category_color};
 
 pub struct HitMap {
-    pub sunburst: Rect,
+    /// Rect the tree map occupies, whichever layout drew it.
+    pub map: Rect,
+    /// Which projection `map` and `slices` were built with, so hit testing
+    /// can undo the same one.
+    pub layout: Layout,
     pub list: Rect,
     pub buttons: Vec<(Rect, Action)>,
     pub crumbs: Vec<(Rect, usize)>,
@@ -25,7 +31,8 @@ pub struct HitMap {
 impl HitMap {
     pub fn empty() -> Self {
         Self {
-            sunburst: Rect::ZERO,
+            map: Rect::ZERO,
+            layout: Layout::Sunburst,
             list: Rect::ZERO,
             buttons: Vec::new(),
             crumbs: Vec::new(),
@@ -256,7 +263,8 @@ fn draw_main(buf: &mut Buffer, app: &App) -> HitMap {
     let (header, body, footer) = frame(buf);
     let crumbs = draw_header(buf, app, header);
     let mut hits = HitMap {
-        sunburst: Rect::ZERO,
+        map: Rect::ZERO,
+        layout: app.layout,
         list: Rect::ZERO,
         buttons: Vec::new(),
         crumbs,
@@ -267,6 +275,7 @@ fn draw_main(buf: &mut Buffer, app: &App) -> HitMap {
 
     match app.view {
         View::Findings => draw_findings(buf, app, body, &mut hits),
+        View::Databases => draw_databases(buf, app, body, &mut hits),
         View::Collector => draw_collector(buf, app, body, &mut hits),
         _ => draw_browse(buf, app, body, &mut hits),
     }
@@ -305,6 +314,109 @@ fn draw_header(buf: &mut Buffer, app: &App, area: Rect) -> Vec<(Rect, usize)> {
 }
 
 fn draw_browse(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
+    match app.layout {
+        Layout::Sunburst => draw_browse_sunburst(buf, app, area, hits),
+        Layout::Icicle => draw_browse_icicle(buf, app, area, hits),
+    }
+}
+
+/// Slices with the hovered node lit, ready to hand to a renderer.
+fn browse_slices(app: &App, tree: &crate::scan::Tree, current: usize, rings: usize) -> Vec<Slice> {
+    let mut slices = sunburst::build_slices(tree, current, app.apparent, app.selected_id(), rings);
+    if let Some(Hover::Slice(node)) = app.hover {
+        for s in slices.iter_mut().filter(|s| s.node == node && !s.grouped) {
+            s.color = theme::emphasize(s.color);
+        }
+    }
+    slices
+}
+
+/// Icicle across the top, child list beneath it at full width. The map costs
+/// a handful of rows instead of a 58% column, so the list gets the rest.
+fn draw_browse_icicle(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
+    let th = theme::current();
+    let budget = icicle::rows_for(area);
+    let Some(tree) = app.tree() else {
+        hits.list = area;
+        return;
+    };
+    if budget == 0 {
+        // Too small for a map: the list alone is the honest fallback, and
+        // it is the same view the layout would degrade to anyway.
+        hits.list = area;
+        draw_child_list(buf, app, area, hits);
+        return;
+    }
+
+    let current = tree.node_at(&app.cwd);
+    let slices = browse_slices(app, tree, current, budget);
+    // A shallow tree must not leave dead rows under its leaves: draw only
+    // the depth that exists and hand the remainder to the list.
+    let depth = slices.iter().map(|s| s.ring + 1).max().unwrap_or(0);
+    let rows = depth.min(budget) as u16;
+
+    // Base bar: everything below it is a share of this one.
+    let node = tree.get(current);
+    let base = format!(
+        " {}  {} ",
+        node_label(node),
+        human_bytes(node.display_size(app.apparent))
+    );
+    let head = Rect {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: 1,
+    };
+    buf.fill(head, th.panel);
+    buf.print_styled(
+        area.x,
+        area.y,
+        &truncate(&base, area.width as usize),
+        th.accent,
+        th.panel,
+        true,
+    );
+
+    if rows == 0 {
+        // A directory with nothing worth drawing still gets its base bar.
+        let list = Rect {
+            x: area.x + 1,
+            y: area.y + 1,
+            width: area.width.saturating_sub(1),
+            height: area.height.saturating_sub(1),
+        };
+        hits.list = list;
+        draw_child_list(buf, app, list, hits);
+        return;
+    }
+
+    let map = Rect {
+        x: area.x,
+        y: area.y + 1,
+        width: area.width,
+        height: rows,
+    };
+    let list_y = map.bottom() + 1;
+    let list = Rect {
+        x: area.x + 1,
+        y: list_y,
+        width: area.width.saturating_sub(1),
+        height: area.height.saturating_sub(list_y.saturating_sub(area.y)),
+    };
+    hits.map = map;
+    hits.list = list;
+
+    icicle::render(buf, map, &slices, tree, app.apparent, app.selected_id());
+    hits.slices = slices;
+
+    for x in area.x..area.right() {
+        buf.print(x, map.bottom(), "\u{2500}", th.muted, th.bg);
+    }
+    draw_child_list(buf, app, list, hits);
+}
+
+fn draw_browse_sunburst(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
     let th = theme::current();
     let left_w = (area.width as u32 * 58 / 100) as u16;
     let left = Rect {
@@ -319,7 +431,7 @@ fn draw_browse(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
         width: area.width.saturating_sub(left_w),
         height: area.height,
     };
-    hits.sunburst = left;
+    hits.map = left;
     hits.list = Rect {
         x: right.x + 1,
         y: right.y,
@@ -331,14 +443,8 @@ fn draw_browse(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
         return;
     };
     let current = tree.node_at(&app.cwd);
-    let selected = app.selected_id();
     let rings = sunburst::rings_for(left);
-    let mut slices = sunburst::build_slices(tree, current, app.apparent, selected, rings);
-    if let Some(Hover::Slice(node)) = app.hover {
-        for s in slices.iter_mut().filter(|s| s.node == node && !s.grouped) {
-            s.color = theme::brighten(s.color);
-        }
-    }
+    let slices = browse_slices(app, tree, current, rings);
     sunburst::render(buf, left, &slices);
     hits.slices = slices;
 
@@ -378,13 +484,19 @@ fn draw_child_list(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
         let n = tree.get(cid);
         let sel = i == app.selected;
         let row_bg = list_row(buf, hits, area, y, i, sel, app.hovered_row(i));
-        let color = if n.category.is_waste() {
+        // A guarded row is one the confirm modal would refuse, so say so here
+        // rather than let someone find that out at the end of the flow.
+        let color = if n.guard.is_some() {
+            theme::tone_color(Tone::Protected)
+        } else if n.category.is_waste() {
             category_color(n.category)
         } else {
             th.palette[i % th.palette.len()]
         };
         let dot = if app.collector.contains_path(&n.path) {
             "●"
+        } else if n.guard.is_some() {
+            "▪"
         } else {
             "·"
         };
@@ -453,6 +565,118 @@ fn draw_findings(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
             row_bg,
         );
     }
+}
+
+/// Glyph for a row's weight. Pairs with `theme::tone_color`.
+fn tone_glyph(tone: Tone) -> &'static str {
+    match tone {
+        Tone::Protected => "\u{25cf}",
+        Tone::Advisory => "\u{25b8}",
+        Tone::Reclaimable => "\u{25cb}",
+    }
+}
+
+/// Databases found by layout and by header probe. Unlike every other list in
+/// rings this one is not a delete queue: most rows are things you must not
+/// remove, so each carries the command that actually returns the space.
+fn draw_databases(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
+    let th = theme::current();
+    let reclaimable: u64 = app.databases.iter().map(|e| e.reclaimable).sum();
+    let title = format!(
+        " Databases \u{b7} {} \u{b7} {} reclaimable without removing data ",
+        app.databases.len(),
+        human_bytes(reclaimable)
+    );
+    let inner = draw_box(buf, area, &title, th.accent, th.muted);
+
+    if app.databases.is_empty() {
+        hits.list = inner;
+        buf.print(
+            inner.x,
+            inner.y,
+            "No PostgreSQL clusters or SQLite databases in this scan.",
+            th.muted,
+            th.bg,
+        );
+        return;
+    }
+
+    // Reserve the last three rows for the selection's guidance: a rule, then
+    // why the space is there and what to do about it.
+    let detail_h: u16 = if inner.height >= 6 { 3 } else { 0 };
+    let list = Rect {
+        height: inner.height.saturating_sub(detail_h),
+        ..inner
+    };
+    hits.list = list;
+
+    let h = list.height as usize;
+    let start = app.list_offset.min(app.databases.len().saturating_sub(1));
+    for (row, (i, entry)) in app
+        .databases
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(h)
+        .enumerate()
+    {
+        let y = list.y + row as u16;
+        let sel = i == app.databases_selected;
+        let row_bg = list_row(buf, hits, list, y, i, sel, app.hovered_row(i));
+        let g = entry.guidance();
+        let color = theme::tone_color(g.tone());
+
+        let size = human_bytes(entry.bytes);
+        let gain = if entry.reclaimable > 0 {
+            format!("\u{2192} {}", human_bytes(entry.reclaimable))
+        } else {
+            String::new()
+        };
+        let right_w = size.chars().count() as u16 + gain.chars().count() as u16 + 3;
+
+        let mut x = buf.print(
+            list.x,
+            y,
+            &format!(" {} ", tone_glyph(g.tone())),
+            color,
+            row_bg,
+        );
+        x = buf.print(x, y, &format!("{:<9}", entry.kind.as_str()), color, row_bg);
+        x = buf.print(x, y, &format!("{:<6}", entry.role.as_str()), th.muted, row_bg);
+        let label_w = list.width.saturating_sub(x - list.x + right_w) as usize;
+        buf.print_styled(x, y, &truncate(&entry.label, label_w), th.text, row_bg, sel);
+
+        let sx = list.right().saturating_sub(right_w);
+        let after = buf.print(sx, y, &size, if sel { th.text } else { th.muted }, row_bg);
+        if !gain.is_empty() {
+            buf.print(after.saturating_add(1), y, &gain, th.accent, row_bg);
+        }
+    }
+
+    if detail_h == 0 {
+        return;
+    }
+    let Some(entry) = app.databases.get(app.databases_selected) else {
+        return;
+    };
+    let g = entry.guidance();
+    let dy = list.bottom();
+    for x in inner.x..inner.right() {
+        buf.print(x, dy, "\u{2500}", th.muted, th.bg);
+    }
+    let w = inner.width.saturating_sub(1) as usize;
+    let why = match &entry.detail {
+        Some(d) => format!("{} {} \u{b7} {}", entry.kind.label(), g.why, d),
+        None => format!("{} {}", entry.kind.label(), g.why),
+    };
+    buf.print(inner.x, dy + 1, &truncate(&why, w), th.text, th.bg);
+    buf.print(
+        inner.x,
+        dy + 2,
+        &truncate(g.action, w),
+        theme::tone_color(g.tone()),
+        th.bg,
+    );
 }
 
 fn draw_collector(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
@@ -629,6 +853,11 @@ fn footer_chips(app: &App) -> Vec<Chip> {
         keep: 1,
     });
     chips.push(Chip {
+        action: Action::Databases,
+        label: " Databases ".into(),
+        keep: 5,
+    });
+    chips.push(Chip {
         action: Action::Collector,
         label: format!(" Collector ({}) ", app.collector.len()),
         keep: 2,
@@ -690,7 +919,9 @@ fn fit_chips(mut chips: Vec<Chip>, width: u16) -> Vec<Chip> {
 fn chip_is_active(app: &App, action: Action) -> bool {
     matches!(
         (&app.view, action),
-        (View::Findings, Action::Findings) | (View::Collector, Action::Collector)
+        (View::Findings, Action::Findings)
+            | (View::Databases, Action::Databases)
+            | (View::Collector, Action::Collector)
     )
 }
 
@@ -778,6 +1009,12 @@ fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ("j/k", "move"),
             ("Enter", "jump"),
             ("Space", "mark"),
+            ("?", "help"),
+        ],
+        View::Databases => vec![
+            ("j/k", "move"),
+            ("Enter", "jump"),
+            ("b", "close"),
             ("?", "help"),
         ],
         _ => vec![

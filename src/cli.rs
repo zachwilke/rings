@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use crate::apps;
 use crate::logo::LOGO;
 
 /// One titled group of bindings. Shared by `rings help`, `--help`, and the
@@ -32,6 +33,8 @@ pub const KEY_GROUPS: &[KeyGroup] = &[
         title: "Views",
         keys: &[
             ("f", "Temp & cache findings"),
+            ("b", "databases"),
+            ("L", "sunburst / icicle"),
             ("c", "delete collector"),
             ("e", "export view to CSV"),
             ("?  F1", "this help"),
@@ -45,7 +48,7 @@ pub const KEY_GROUPS: &[KeyGroup] = &[
             ("Space  d", "mark or unmark"),
             ("x", "confirm from collector"),
         ],
-        note: Some("Never automatic · root types DELETE"),
+        note: Some("root types DELETE · live DB refused"),
     },
     KeyGroup {
         title: "Picker",
@@ -95,14 +98,14 @@ ARGS:
 
 OPTIONS:
     --json               Write the analyzed tree as JSON to stdout and exit
-    --csv <FILE>         Write findings CSV to FILE and exit (temp file, then rename)
+    --csv <FILE>         Write findings CSV to FILE and exit (atomic)
     --plain, --no-tui    Print a parseable table to stdout and exit
     --offline            Skip the GitHub Release update check
     --one-file-system    Stay on one filesystem (default)
     --all-filesystems    Descend into other mounted filesystems
     --apparent           Size by apparent bytes (st_size) instead of used
-    --theme <NAME>       Color theme: rings (default), nord, gruvbox, dracula,
-                         solarized-dark, mono
+    --no-app-probe       Skip database header reads; keep layout detection
+    --theme <NAME>       Color theme: {THEMES}
     -h, --help           Print help
     -V, --version        Print version
 
@@ -113,6 +116,18 @@ never enter the TUI, even in a terminal.
 An interactive TUI launch checks GitHub Releases for a newer rings and
 offers to install it. --offline or RINGS_NO_UPDATE=1 skips the check.
 Pipes, --plain, --json, --csv, --help, and --version never check.
+
+rings recognises PostgreSQL clusters, MySQL/MariaDB data directories,
+SQL Server files, and SQLite databases while it walks, and reports what
+the space is doing rather than only how big it is: live table data,
+write-ahead log, binary logs, query spill, or freelist pages a VACUUM
+would return. Each row carries the command that actually reclaims the
+space -- PURGE BINARY LOGS, a log backup before DBCC SHRINKFILE, VACUUM
+-- because for a database the answer is almost never rm. Files a running
+server depends on are refused by the delete safeguard, including the
+directories above them. Layout detection is free; --no-app-probe turns
+off the bounded header reads (100 bytes per candidate file) that measure
+reclaimable space, and leaves the protection in place.
 
 Colors follow the terminal: 24-bit where COLORTERM says so, else 256, else
 16. NO_COLOR disables color; RINGS_COLORS=16|256|truecolor overrides.
@@ -125,11 +140,41 @@ Full-disk scan:
 
 Without root / Administrator, rings still works on what you can read.
 
-CSV and plain export include every directory, every temp/cache/log/journal/crash
-hit, and every file of 1 MiB or more. Tiny ordinary files are omitted.
+CSV and plain export include every directory, every waste hit (temp, cache,
+log, journal, crash), and every file of 1 MiB or more. Tiny ordinary files
+are omitted.
 
 KEYS:
 ";
+
+/// Built-in theme names wrapped into the OPTIONS column, so adding a theme
+/// cannot silently leave `--help` describing the old set.
+fn theme_list() -> String {
+    const INDENT: &str = "\n                         ";
+    const WIDTH: usize = 50;
+    let mut out = String::new();
+    let mut line = String::new();
+    for (i, name) in crate::tui::theme::names().iter().enumerate() {
+        let piece = if i == 0 {
+            format!("{name} (default)")
+        } else {
+            (*name).to_string()
+        };
+        if line.is_empty() {
+            line = piece;
+        } else if line.chars().count() + 2 + piece.chars().count() > WIDTH {
+            out.push_str(&line);
+            out.push(',');
+            out.push_str(INDENT);
+            line = piece;
+        } else {
+            line.push_str(", ");
+            line.push_str(&piece);
+        }
+    }
+    out.push_str(&line);
+    out
+}
 
 /// Logo + usage + the same key list the TUI overlay shows.
 pub fn help_text() -> String {
@@ -138,7 +183,7 @@ pub fn help_text() -> String {
         out.push('\n');
     }
     out.push('\n');
-    out.push_str(USAGE);
+    out.push_str(&USAGE.replace("{THEMES}", &theme_list()));
     for (i, group) in KEY_GROUPS.iter().enumerate() {
         if i > 0 {
             out.push('\n');
@@ -165,6 +210,7 @@ pub struct Cli {
     pub plain: bool,
     pub all_filesystems: bool,
     pub apparent: bool,
+    pub no_app_probe: bool,
     pub offline: bool,
     pub theme: Option<String>,
     pub help: bool,
@@ -189,6 +235,7 @@ impl Cli {
                 "--one-file-system" => cli.all_filesystems = false,
                 "--all-filesystems" => cli.all_filesystems = true,
                 "--apparent" => cli.apparent = true,
+                "--no-app-probe" => cli.no_app_probe = true,
                 "--theme" => {
                     let name = it
                         .next()
@@ -223,6 +270,16 @@ impl Cli {
 
     pub fn one_file_system(&self) -> bool {
         !self.all_filesystems
+    }
+
+    /// Application analysis settings. Structural detection and the delete
+    /// safeguards always run; the flag gates content reads only.
+    pub fn app_options(&self) -> apps::Options {
+        if self.no_app_probe {
+            apps::Options::structural_only()
+        } else {
+            apps::Options::default()
+        }
     }
 
     /// TUI only when stdout is a TTY and no scripting flag is set.
@@ -263,6 +320,13 @@ mod tests {
 
         let cli = parse(&["--no-tui"]).unwrap();
         assert!(cli.plain);
+
+        let cli = parse(&["--no-app-probe", "/var"]).unwrap();
+        assert!(cli.no_app_probe);
+        assert!(!cli.app_options().probe, "header reads are off");
+
+        let cli = parse(&["/var"]).unwrap();
+        assert!(cli.app_options().probe, "probing is the default");
 
         let cli = parse(&["--offline", "/"]).unwrap();
         assert!(cli.offline);
@@ -323,13 +387,35 @@ mod tests {
             "--no-tui",
             "--offline",
             "--theme",
+            "tokyo-night",
+            "tokyo-night-day",
             "solarized-dark",
+            "catppuccin",
             "NO_COLOR",
             "GitHub Release",
             "RINGS_NO_UPDATE",
+            "--no-app-probe",
+            "PostgreSQL",
+            "SQLite",
+            "MySQL",
+            "SQL Server",
+            "DBCC SHRINKFILE",
             "rings help",
         ] {
             assert!(text.contains(needle), "help missing {needle:?}:\n{text}");
+        }
+        assert!(
+            !text.contains("{THEMES}"),
+            "the theme placeholder must be filled in:\n{text}"
+        );
+        for name in crate::tui::theme::names() {
+            assert!(text.contains(name), "help missing theme {name:?}:\n{text}");
+        }
+        for line in text.lines() {
+            assert!(
+                line.chars().count() <= 79,
+                "help line runs past 80 columns: {line:?}"
+            );
         }
         for group in KEY_GROUPS {
             for (key, desc) in group.keys {

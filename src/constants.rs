@@ -83,6 +83,17 @@ pub const SUNBURST_HOLE_LABEL_PX: f64 = 5.6;
 /// Hair of empty pixels around the disk so the edge does not clip.
 pub const SUNBURST_MARGIN: f64 = 1.1;
 
+/// Deepest levels an icicle draws. Past this the rows are too thin to carry
+/// a name, and the child list holds the detail anyway.
+pub const ICICLE_ROWS_MAX: usize = 8;
+
+/// Fewer rows than this is not worth the space the panel costs.
+pub const ICICLE_ROWS_MIN: usize = 3;
+
+/// Narrowest span that gets a name written into it. Below this a slice is
+/// still painted and still clickable, just anonymous.
+pub const ICICLE_LABEL_MIN: u16 = 6;
+
 /// Footer rows: quiet stats, one chrome band, selected path.
 pub const FOOTER_H: u16 = 3;
 

@@ -47,6 +47,7 @@ fn run(cli: Cli) -> Result<(), String> {
     let path = cli.scan_path();
     let opts = WalkOptions {
         one_file_system: cli.one_file_system(),
+        apps: cli.app_options(),
         root_dev_override: None,
     };
 
