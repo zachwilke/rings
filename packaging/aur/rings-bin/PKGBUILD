@@ -16,9 +16,9 @@ source_aarch64=("rings.xz::https://github.com/zachwilke/rings/releases/download/
 source_armv7h=("rings.xz::https://github.com/zachwilke/rings/releases/download/v${pkgver}/rings-armv7-linux-musleabihf.xz")
 source=("LICENSE::https://raw.githubusercontent.com/zachwilke/rings/v${pkgver}/LICENSE")
 sha256sums=('7d6bbd30b08d7d81fd006d07e78daf0f73fe24ec36ec44e85ac1e13d74b58a49')
-sha256sums_x86_64=('b64c07fd6f3c3827646e016476d119e68188319cd939a3796f8605cf821ef4e1')
-sha256sums_aarch64=('95647a952c37ce97e481cea5d76fedcd02a1f63b7ff62da6199691f66b25ed9e')
-sha256sums_armv7h=('66f6c042c69c92e20742feba6238be479a785ab2c0ad3f1a26225134ea89d77c')
+sha256sums_x86_64=('110558a71d279c3beb4f759641c5effea8b44d4e9e6e7914f1be7130da7432d8')
+sha256sums_aarch64=('6a07c2e9b2ca43f2a6e6e151c8f53f8f5b319ecc84c92ac00891284085139349')
+sha256sums_armv7h=('108e926a27afd95c44610f78aa1236c2b892c31bd5586322d13c803308fa2770')
 
 package() {
 	install -Dm755 "$srcdir/rings" "$pkgdir/usr/bin/rings"
