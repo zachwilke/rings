@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use crate::apps::{AppTag, Probe};
 use crate::classify::Category;
 
 #[derive(Clone, Debug)]
@@ -21,6 +22,14 @@ pub struct Node {
     pub apparent: u64,
     pub category: Category,
     pub nlink: u64,
+    /// Which application owns this file and what it does there.
+    /// `None` until `apps::annotate` runs, and for anything unrecognised.
+    pub app: Option<AppTag>,
+    /// Set when this node — or anything beneath it — must never be
+    /// unlinked. Propagated upward by `apps::annotate` so that marking a
+    /// *parent* of a live database is refused too, not just the data
+    /// files themselves.
+    pub guard: Option<AppTag>,
 }
 
 impl Node {
@@ -57,6 +66,9 @@ pub struct Tree {
     pub nodes: Vec<Node>,
     pub root: usize,
     pub stats: ScanStats,
+    /// What the application probes measured. Sparse, so a scan with no
+    /// databases in it costs nothing.
+    pub probes: Vec<Probe>,
 }
 
 impl Tree {
@@ -155,6 +167,8 @@ mod tests {
             apparent: used,
             category: Category::Normal,
             nlink: 1,
+            app: None,
+            guard: None,
         }
     }
 
@@ -171,6 +185,8 @@ mod tests {
             apparent: own,
             category: Category::Normal,
             nlink: 2,
+            app: None,
+            guard: None,
         }
     }
 
@@ -186,6 +202,7 @@ mod tests {
             ],
             root: 0,
             stats: ScanStats::default(),
+            probes: Vec::new(),
         };
         tree.recompute();
         assert_eq!(tree.nodes[3].used, 200);
@@ -201,6 +218,7 @@ mod tests {
             nodes: vec![dir("root", None, 10, vec![1]), file("a", Some(0), 90)],
             root: 0,
             stats: ScanStats::default(),
+            probes: Vec::new(),
         };
         tree.recompute();
         assert_eq!(tree.nodes[0].used, 100);

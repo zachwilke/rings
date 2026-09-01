@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use crate::apps::{summarize, DbEntry};
 use crate::constants::{DOUBLE_CLICK, TUI_EXPORT_FILENAME};
 use crate::csv_export::write_csv;
 use crate::delete::{commit, needs_typed_confirm, Collector, CollectorItem, Confirm};
@@ -19,6 +20,7 @@ pub enum View {
     Scanning,
     Browse,
     Findings,
+    Databases,
     Collector,
     Confirm { typed: String },
     Help,
@@ -27,6 +29,7 @@ pub enum View {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     Findings,
+    Databases,
     Collector,
     Export,
     Quit,
@@ -40,6 +43,34 @@ pub enum Action {
     Picker,
     /// Return to the scan the picker was opened from.
     BackToScan,
+}
+
+/// How the browse view draws the tree. Both layouts consume the same
+/// `Slice` list from `sunburst::build_slices`; only the projection and the
+/// panel split differ.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layout {
+    /// Braille disc on the left, child list on the right.
+    Sunburst,
+    /// Full-width icicle above the child list. Names fit inside the bars,
+    /// and it costs a quarter of the rows.
+    Icicle,
+}
+
+impl Layout {
+    pub fn next(self) -> Layout {
+        match self {
+            Layout::Sunburst => Layout::Icicle,
+            Layout::Icicle => Layout::Sunburst,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Layout::Sunburst => "sunburst",
+            Layout::Icicle => "icicle",
+        }
+    }
 }
 
 /// What the pointer is over. Drawn as a subtle highlight; never moves
@@ -125,14 +156,18 @@ pub struct App {
     pub tree: Option<Tree>,
     /// Waste hits of `tree`, largest first. Computed once per tree.
     pub findings: Vec<usize>,
+    /// Application findings of `tree`, largest first. Computed once per tree.
+    pub databases: Vec<DbEntry>,
     pub cwd: Vec<usize>,
     pub selected: usize,
     pub list_offset: usize,
     pub findings_selected: usize,
+    pub databases_selected: usize,
     pub collector: Collector,
     pub view: View,
     pub previous_view: View,
     pub apparent: bool,
+    pub layout: Layout,
     pub progress: Option<Progress>,
     pub status: String,
     pub is_root: bool,
@@ -152,14 +187,17 @@ impl App {
         Self {
             tree: None,
             findings: Vec::new(),
+            databases: Vec::new(),
             cwd: Vec::new(),
             selected: 0,
             list_offset: 0,
             findings_selected: 0,
+            databases_selected: 0,
             collector: Collector::new(),
             view: View::Scanning,
             previous_view: View::Browse,
             apparent,
+            layout: Layout::Sunburst,
             progress: None,
             status: String::new(),
             is_root: sys::running_as_root(),
@@ -177,11 +215,13 @@ impl App {
     /// Install a finished scan and derive everything cached from it.
     pub fn set_tree(&mut self, tree: Tree) {
         self.findings = waste_hits(&tree);
+        self.databases = summarize(&tree);
         self.tree = Some(tree);
     }
 
     fn refresh_findings(&mut self) {
         self.findings = self.tree.as_ref().map(waste_hits).unwrap_or_default();
+        self.databases = self.tree.as_ref().map(summarize).unwrap_or_default();
     }
 
     /// Length of the list the cursor lives in for this view.
@@ -189,6 +229,7 @@ impl App {
         match self.view {
             View::Picker => self.picker.as_ref().map_or(0, |p| p.entries.len()),
             View::Findings => self.findings.len(),
+            View::Databases => self.databases.len(),
             View::Collector => self.collector.len(),
             View::Browse | View::Confirm { .. } => self.current_children().len(),
             _ => 0,
@@ -204,6 +245,7 @@ impl App {
                 }
             }
             View::Findings => self.findings_selected = i,
+            View::Databases => self.databases_selected = i,
             _ => self.selected = i,
         }
     }
@@ -324,10 +366,13 @@ impl App {
         self.scan_path = path;
         self.tree = None;
         self.findings.clear();
+        self.databases.clear();
+        self.collector.clear();
         self.progress = None;
         self.cwd.clear();
         self.selected = 0;
         self.findings_selected = 0;
+        self.databases_selected = 0;
         self.list_offset = 0;
         self.picker = None;
         self.status.clear();
@@ -460,6 +505,13 @@ impl App {
         }
     }
 
+    /// Swap the browse map. Says which one it landed on, because the
+    /// change is large enough that a silent toggle reads as a glitch.
+    pub fn cycle_layout(&mut self) {
+        self.layout = self.layout.next();
+        self.status = format!("layout: {}", self.layout.label());
+    }
+
     pub fn open_help(&mut self) {
         if matches!(self.view, View::Help) {
             return;
@@ -497,6 +549,7 @@ impl App {
     pub fn selected_node_id(&self) -> Option<usize> {
         match self.view {
             View::Findings => self.findings.get(self.findings_selected).copied(),
+            View::Databases => self.databases.get(self.databases_selected).map(|e| e.node),
             View::Collector => self.collector.items().get(self.selected).map(|i| i.node_id),
             View::Browse | View::Confirm { .. } => self.selected_id(),
             _ => None,
@@ -509,10 +562,18 @@ impl App {
         Some(tree.get(id).path.display().to_string())
     }
 
+    /// Hold every cursor inside its own list. Each view keeps a separate
+    /// index, so they must be clamped against separate lengths.
     pub fn clamp_selection(&mut self) {
-        let last = self.list_len().saturating_sub(1);
-        self.selected = self.selected.min(last);
-        self.findings_selected = self.findings_selected.min(last);
+        self.selected = self
+            .selected
+            .min(self.current_children().len().saturating_sub(1));
+        self.findings_selected = self
+            .findings_selected
+            .min(self.findings.len().saturating_sub(1));
+        self.databases_selected = self
+            .databases_selected
+            .min(self.databases.len().saturating_sub(1));
     }
 
     /// Move the cursor of whatever list is in view; the picker keeps its own.
@@ -523,10 +584,11 @@ impl App {
                     p.move_sel(delta);
                 }
             }
-            View::Browse | View::Findings | View::Collector => {
+            View::Browse | View::Findings | View::Collector | View::Databases => {
                 let len = self.list_len();
                 let idx = match self.view {
                     View::Findings => &mut self.findings_selected,
+                    View::Databases => &mut self.databases_selected,
                     _ => &mut self.selected,
                 };
                 *idx = step(*idx, delta, len);
@@ -558,6 +620,11 @@ impl App {
                     self.status.clear();
                 }
             }
+            View::Databases => {
+                if let Some(node) = self.databases.get(self.databases_selected).map(|e| e.node) {
+                    self.focus_node(node);
+                }
+            }
             View::Picker => self.picker_enter(),
             _ => {}
         }
@@ -566,7 +633,7 @@ impl App {
     pub fn go_up(&mut self) {
         match self.view {
             View::Help => self.close_help(),
-            View::Findings | View::Collector => {
+            View::Findings | View::Collector | View::Databases => {
                 self.view = View::Browse;
             }
             View::Confirm { .. } => {
@@ -610,7 +677,10 @@ impl App {
     }
 
     pub fn toggle_mark_selected(&mut self) {
-        if !matches!(self.view, View::Browse | View::Findings | View::Collector) {
+        if !matches!(
+            self.view,
+            View::Browse | View::Findings | View::Collector | View::Databases
+        ) {
             return;
         }
         let Some(tree) = self.tree.as_ref() else {
@@ -631,6 +701,7 @@ impl App {
             size_bytes: n.display_size(self.apparent),
             category: n.category,
             node_id: id,
+            guard: n.guard,
         };
         let size = human_bytes(n.display_size(self.apparent));
         let name = n.name.clone();
@@ -660,6 +731,28 @@ impl App {
         self.findings_selected = 0;
         self.list_offset = 0;
         self.status.clear();
+    }
+
+    pub fn open_databases(&mut self) {
+        self.previous_view = self.view.clone();
+        self.view = View::Databases;
+        self.databases_selected = 0;
+        self.list_offset = 0;
+        self.status = self.databases_status();
+    }
+
+    /// Headline for the databases view: what can be reclaimed without
+    /// deleting anything that holds data.
+    pub fn databases_status(&self) -> String {
+        if self.databases.is_empty() {
+            return "no PostgreSQL clusters or SQLite databases in this scan".into();
+        }
+        let reclaimable: u64 = self.databases.iter().map(|e| e.reclaimable).sum();
+        format!(
+            "{} entries · {} reclaimable without removing data",
+            self.databases.len(),
+            human_bytes(reclaimable)
+        )
     }
 
     pub fn open_collector(&mut self) {

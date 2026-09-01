@@ -9,7 +9,7 @@ use crate::constants::{
 };
 use crate::scan::Tree;
 use crate::term::{Buffer, Cell, Rect, Rgb};
-use crate::tui::theme::{self, brighten, category_color, dim_color, separator_color};
+use crate::tui::theme::{self, category_color, dim_color, emphasize, separator_color};
 
 #[derive(Clone, Debug)]
 pub struct Slice {
@@ -142,7 +142,7 @@ fn slice_color(
     };
     let mut c = dim_color(base, ring, rings);
     if selected == Some(id) || selected.is_some_and(|s| is_descendant(tree, s, id)) {
-        c = brighten(c);
+        c = emphasize(c);
     }
     c
 }
@@ -236,9 +236,9 @@ fn norm(geo: &Geometry, px: f64, py: f64) -> (f64, f64) {
     ((px - geo.cx_px) / geo.radius, (py - geo.cy_px) / geo.radius)
 }
 
-fn sample_px(slices: &[Slice], geo: &Geometry, px: f64, py: f64) -> Option<Rgb> {
+fn sample_px(slices: &[Slice], geo: &Geometry, px: f64, py: f64, bg: Rgb) -> Option<Rgb> {
     let (dx, dy) = norm(geo, px, py);
-    sample(slices, geo, dx, dy)
+    sample(slices, geo, dx, dy, bg)
 }
 
 fn slice_at_px<'a>(
@@ -303,7 +303,7 @@ pub fn render(buf: &mut Buffer, area: Rect, slices: &[Slice]) {
                 for col in 0..BRAILLE_COLS {
                     let px = tx as f64 * BRAILLE_COLS as f64 + col as f64 + 0.5;
                     let py = ty as f64 * BRAILLE_ROWS as f64 + row as f64 + 0.5;
-                    dots[row][col] = sample_px(slices, &geo, px, py);
+                    dots[row][col] = sample_px(slices, &geo, px, py, bg);
                 }
             }
             paint_braille(buf, area.x + tx, area.y + ty, dots, bg);
@@ -362,11 +362,11 @@ fn slice_at(slices: &[Slice], ring: usize, angle: f64, allow_grouped: bool) -> O
         })
 }
 
-fn sample(slices: &[Slice], geo: &Geometry, nx: f64, ny: f64) -> Option<Rgb> {
+fn sample(slices: &[Slice], geo: &Geometry, nx: f64, ny: f64, bg: Rgb) -> Option<Rgb> {
     let r = (nx * nx + ny * ny).sqrt();
     let (ring, angle) = polar(nx, ny, geo.hole, geo.rings)?;
     let slice = slice_at(slices, ring, angle, true)?;
-    let mut c = restep_dim(slice.color, slice.ring, ring, geo.rings);
+    let mut c = restep_dim(slice.color, slice.ring, ring, geo.rings, bg);
     if near_wedge_edge(angle, slice.start, slice.end, r * geo.radius) {
         c = separator_color(c);
     }
@@ -374,20 +374,21 @@ fn sample(slices: &[Slice], geo: &Geometry, nx: f64, ny: f64) -> Option<Rgb> {
 }
 
 /// Re-apply the outer-ring fade when a leaf is painted past its own ring.
-fn restep_dim(color: Rgb, from_ring: usize, to_ring: usize, rings: usize) -> Rgb {
+fn restep_dim(color: Rgb, from_ring: usize, to_ring: usize, rings: usize, bg: Rgb) -> Rgb {
     if to_ring <= from_ring {
         return color;
     }
-    let last = rings.saturating_sub(1).max(1) as f32;
-    let k0 = (1.0 - 0.38 * (from_ring as f32 / last).min(1.0)).max(0.05);
-    let k1 = 1.0 - 0.38 * (to_ring as f32 / last).min(1.0);
-    let t = k1 / k0;
-    let Rgb(r, g, b) = color;
-    Rgb(
-        (r as f32 * t) as u8,
-        (g as f32 * t) as u8,
-        (b as f32 * t) as u8,
-    )
+    let t0 = theme::dim_t(from_ring, rings);
+    let t1 = theme::dim_t(to_ring, rings);
+    if t1 <= t0 || t0 >= 1.0 {
+        return color;
+    }
+    // `color` already sits `t0` of the way to the ground, and
+    // mix(mix(c, bg, t0), bg, e) == mix(c, bg, t0 + e(1 - t0)), so this much
+    // further lands exactly on `t1`.
+    // `bg` is passed in rather than read here: this runs once per braille
+    // sample, eight times per cell.
+    theme::blend(color, bg, (t1 - t0) / (1.0 - t0))
 }
 
 fn near_wedge_edge(angle: f64, start: f64, end: f64, r_px: f64) -> bool {
@@ -491,6 +492,8 @@ mod tests {
             apparent: used,
             category,
             nlink: if is_dir { 2 } else { 1 },
+            app: None,
+            guard: None,
         }
     }
 
@@ -573,6 +576,7 @@ mod tests {
             nodes,
             root: 0,
             stats: ScanStats::default(),
+            probes: Vec::new(),
         };
         tree.recompute();
         tree
@@ -650,6 +654,7 @@ mod tests {
             nodes,
             root: 0,
             stats: ScanStats::default(),
+            probes: Vec::new(),
         };
         tree.recompute();
         tree
@@ -803,7 +808,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_slice_and_descendants_brighten() {
+    fn selected_slice_and_descendants_stand_out() {
         let tree = fixture_tree();
         let plain = build_slices(&tree, 0, false, None, 8);
         let lit = build_slices(&tree, 0, false, Some(11), 8);
@@ -811,13 +816,13 @@ mod tests {
         let var_lit = lit.iter().find(|s| s.node == 11 && !s.grouped).unwrap();
         assert_ne!(
             var_plain.color, var_lit.color,
-            "selected var should brighten"
+            "the selected wedge must separate from its siblings"
         );
         let log_plain = plain.iter().find(|s| s.node == 12 && !s.grouped).unwrap();
         let log_lit = lit.iter().find(|s| s.node == 12 && !s.grouped).unwrap();
         assert_ne!(
             log_plain.color, log_lit.color,
-            "descendant log should brighten with var"
+            "and its descendants travel with it"
         );
         let usr_plain = plain.iter().find(|s| s.node == 1 && !s.grouped).unwrap();
         let usr_lit = lit.iter().find(|s| s.node == 1 && !s.grouped).unwrap();
