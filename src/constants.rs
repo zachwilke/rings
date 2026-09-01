@@ -62,14 +62,49 @@ pub const DELETE_CONFIRM_PHRASE: &str = "DELETE";
 /// Default CSV filename written from the TUI.
 pub const TUI_EXPORT_FILENAME: &str = "rings-export.csv";
 
-/// Rings drawn outward from the current directory.
-pub const SUNBURST_RINGS: usize = 4;
+/// Deepest ring count on a large panel. Braille 2×4 samples make thinner rings readable.
+pub const SUNBURST_RINGS_MAX: usize = 10;
 
-/// Slices thinner than this fraction of the parent join "smaller objects".
-pub const MIN_SLICE_FRACTION: f64 = 0.018;
+/// Floor so a tiny terminal does not turn the disk into noise.
+pub const SUNBURST_RINGS_MIN: usize = 4;
 
-/// Inner hole of the sunburst, as a fraction of the outer radius.
-pub const SUNBURST_HOLE: f64 = 0.30;
+/// Target braille pixels (2×4 per cell) of radial thickness per ring.
+pub const SUNBURST_RING_PX: f64 = 3.8;
+
+/// Tightest inner hole, as a fraction of the outer radius.
+pub const SUNBURST_HOLE_MIN: f64 = 0.13;
+
+/// Loosest inner hole (tiny panels still need a well for the size label).
+pub const SUNBURST_HOLE_MAX: f64 = 0.20;
+
+/// Braille pixels reserved for the center size label.
+pub const SUNBURST_HOLE_LABEL_PX: f64 = 5.6;
+
+/// Hair of empty pixels around the disk so the edge does not clip.
+pub const SUNBURST_MARGIN: f64 = 1.1;
+
+/// Deepest levels an icicle draws. Past this the rows are too thin to carry
+/// a name, and the child list holds the detail anyway.
+pub const ICICLE_ROWS_MAX: usize = 8;
+
+/// Fewer rows than this is not worth the space the panel costs.
+pub const ICICLE_ROWS_MIN: usize = 3;
+
+/// Narrowest span that gets a name written into it. Below this a slice is
+/// still painted and still clickable, just anonymous.
+pub const ICICLE_LABEL_MIN: u16 = 6;
+
+/// Footer rows: quiet stats, one chrome band, selected path.
+pub const FOOTER_H: u16 = 3;
+
+/// Empty cells between footer chips so they read as buttons, not a sentence.
+pub const CHIP_GAP: u16 = 2;
+
+/// Parent-relative floor; thinner children join "smaller objects".
+pub const MIN_SLICE_FRACTION: f64 = 0.0065;
+
+/// Absolute angular floor (fraction of the full circle) so dust stays grouped.
+pub const MIN_SLICE_ANGLE: f64 = 0.0032;
 
 /// Double-click window for mouse drill-in.
 pub const DOUBLE_CLICK: Duration = Duration::from_millis(400);

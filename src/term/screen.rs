@@ -2,7 +2,9 @@
 
 use std::io::{self, Write};
 
-use super::Rgb;
+use std::fmt::Write as _;
+
+use super::{color, ColorDepth, Rgb};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rect {
@@ -156,10 +158,15 @@ impl Buffer {
 
 /// Emit only cells that differ from `prev`. `prev = None` repaints everything.
 pub fn flush_diff(buf: &Buffer, prev: Option<&Buffer>) -> io::Result<()> {
+    let depth = color::color_depth();
+    let base_bg = buf.get(0, 0).map(|c| c.bg).unwrap_or(Rgb(0, 0, 0));
     let mut out = String::with_capacity(4096);
-    let mut last_fg: Option<Rgb> = None;
-    let mut last_bg: Option<Rgb> = None;
+    // Compare what the terminal would see, so shades that quantize to the
+    // same palette slot do not each cost an escape sequence.
+    let mut last_fg: Option<u32> = None;
+    let mut last_bg: Option<u32> = None;
     let mut last_bold = false;
+    let mut last_reverse = false;
     let mut cursor: Option<(u16, u16)> = None;
 
     let same_shape = prev.is_some_and(|p| p.width == buf.width && p.height == buf.height);
@@ -176,21 +183,30 @@ pub fn flush_diff(buf: &Buffer, prev: Option<&Buffer>) -> io::Result<()> {
             }
             let need_move = cursor != Some((x, y));
             if need_move {
-                out.push_str(&format!("\x1b[{};{}H", y + 1, x + 1));
+                let _ = write!(out, "\x1b[{};{}H", y + 1, x + 1);
             }
             if last_bold != cell.bold {
                 out.push_str(if cell.bold { "\x1b[1m" } else { "\x1b[22m" });
                 last_bold = cell.bold;
             }
-            if last_fg != Some(cell.fg) {
-                let Rgb(r, g, b) = cell.fg;
-                out.push_str(&format!("\x1b[38;2;{r};{g};{b}m"));
-                last_fg = Some(cell.fg);
-            }
-            if last_bg != Some(cell.bg) {
-                let Rgb(r, g, b) = cell.bg;
-                out.push_str(&format!("\x1b[48;2;{r};{g};{b}m"));
-                last_bg = Some(cell.bg);
+            if depth == ColorDepth::Mono {
+                // No color: reverse video stands in for any non-base background.
+                let reverse = cell.bg != base_bg;
+                if last_reverse != reverse {
+                    out.push_str(if reverse { "\x1b[7m" } else { "\x1b[27m" });
+                    last_reverse = reverse;
+                }
+            } else {
+                let fg = color::color_key(depth, cell.fg);
+                if last_fg != Some(fg) {
+                    color::push_sgr(&mut out, depth, cell.fg, true);
+                    last_fg = Some(fg);
+                }
+                let bg = color::color_key(depth, cell.bg);
+                if last_bg != Some(bg) {
+                    color::push_sgr(&mut out, depth, cell.bg, false);
+                    last_bg = Some(bg);
+                }
             }
             out.push(cell.ch);
             cursor = Some((x.saturating_add(1), y));

@@ -2,25 +2,82 @@
 
 use std::path::PathBuf;
 
+use crate::apps;
 use crate::logo::LOGO;
 
-/// Every TUI binding, shared by `rings help`, `--help`, and the help overlay.
-pub const KEY_LINES: &[&str] = &[
-    "j k  ↑ ↓  PgUp PgDn   move selection",
-    "Enter                 drill into the selected directory",
-    "h Backspace ←         go up one directory",
-    "Space  d              mark or unmark for the delete collector",
-    "f                     Temp & cache findings",
-    "c                     delete collector",
-    "x                     confirm delete (from collector)",
-    "e                     export current view as rings-export.csv",
-    "?  F1                 this help",
-    "q                     quit",
-    "Mouse  click slice/row to select · double-click to drill · click footer",
-    "Delete is never automatic. The collector shows paths and total size.",
-    "As root/Administrator, type DELETE to unlink. Deletes are logged.",
-    "Esc / ? / F1 / h      close this help",
+/// One titled group of bindings. Shared by `rings help`, `--help`, and the
+/// help overlay so the three never drift apart.
+pub struct KeyGroup {
+    pub title: &'static str,
+    pub keys: &'static [(&'static str, &'static str)],
+    /// Muted line under the group; explains a rule, not a key.
+    pub note: Option<&'static str>,
+}
+
+/// Keys stay within `HELP_KEY_W`, descriptions within `HELP_DESC_W`, and
+/// notes within `HELP_COL_W`; the test below holds the table to it.
+pub const KEY_GROUPS: &[KeyGroup] = &[
+    KeyGroup {
+        title: "Navigate",
+        keys: &[
+            ("j k  ↑ ↓", "move selection"),
+            ("PgUp PgDn", "move by a page"),
+            ("g  G", "first / last"),
+            ("Enter", "drill into directory"),
+            ("h Backspace ←", "go up one directory"),
+            ("-", "back to the picker"),
+        ],
+        note: None,
+    },
+    KeyGroup {
+        title: "Views",
+        keys: &[
+            ("f", "Temp & cache findings"),
+            ("b", "databases"),
+            ("L", "sunburst / icicle"),
+            ("c", "delete collector"),
+            ("e", "export view to CSV"),
+            ("?  F1", "this help"),
+            ("q", "quit"),
+        ],
+        note: None,
+    },
+    KeyGroup {
+        title: "Delete",
+        keys: &[
+            ("Space  d", "mark or unmark"),
+            ("x", "confirm from collector"),
+        ],
+        note: Some("root types DELETE · live DB refused"),
+    },
+    KeyGroup {
+        title: "Picker",
+        keys: &[
+            ("Enter  l", "open directory"),
+            ("h Backspace", "go up"),
+            ("s", "scan highlighted dir"),
+            ("Esc", "back to the scan"),
+        ],
+        note: Some("Opens with no PATH, or on -"),
+    },
+    KeyGroup {
+        title: "Mouse",
+        keys: &[
+            ("click", "select · click footer"),
+            ("double-click", "drill in"),
+            ("right-click", "context menu"),
+            ("wheel", "scroll"),
+            ("hover", "highlight · slice info"),
+        ],
+        note: None,
+    },
 ];
+
+/// Help overlay geometry: key caps, descriptions, and the column they make.
+/// Two columns plus a 2-cell gap fit inside an 80-column box with a margin.
+pub const HELP_KEY_W: usize = 13;
+pub const HELP_DESC_W: usize = 22;
+pub const HELP_COL_W: usize = HELP_KEY_W + 2 + HELP_DESC_W;
 
 const USAGE: &str = "\
 rings — disk usage sunburst for Linux, macOS, and Windows
@@ -34,21 +91,46 @@ USAGE:
     rings help
 
 ARGS:
-    [PATH]    Directory or file to scan (default: current directory)
+    [PATH]    Directory or file to scan. With no PATH an interactive TUI
+              opens the directory picker in the current directory; pick a
+              directory there and press s to scan it. Piped or scripted
+              runs with no PATH still scan the current directory.
 
 OPTIONS:
     --json               Write the analyzed tree as JSON to stdout and exit
-    --csv <FILE>         Write findings CSV to FILE and exit (temp file, then rename)
+    --csv <FILE>         Write findings CSV to FILE and exit (atomic)
     --plain, --no-tui    Print a parseable table to stdout and exit
+    --offline            Skip the GitHub Release update check
     --one-file-system    Stay on one filesystem (default)
     --all-filesystems    Descend into other mounted filesystems
     --apparent           Size by apparent bytes (st_size) instead of used
+    --no-app-probe       Skip database header reads; keep layout detection
+    --theme <NAME>       Color theme: {THEMES}
     -h, --help           Print help
     -V, --version        Print version
 
 When stdout is not a terminal (piped or redirected), rings prints the
 plain table instead of opening the TUI. --csv, --json, and --plain
 never enter the TUI, even in a terminal.
+
+An interactive TUI launch checks GitHub Releases for a newer rings and
+offers to install it. --offline or RINGS_NO_UPDATE=1 skips the check.
+Pipes, --plain, --json, --csv, --help, and --version never check.
+
+rings recognises PostgreSQL clusters, MySQL/MariaDB data directories,
+SQL Server files, and SQLite databases while it walks, and reports what
+the space is doing rather than only how big it is: live table data,
+write-ahead log, binary logs, query spill, or freelist pages a VACUUM
+would return. Each row carries the command that actually reclaims the
+space -- PURGE BINARY LOGS, a log backup before DBCC SHRINKFILE, VACUUM
+-- because for a database the answer is almost never rm. Files a running
+server depends on are refused by the delete safeguard, including the
+directories above them. Layout detection is free; --no-app-probe turns
+off the bounded header reads (100 bytes per candidate file) that measure
+reclaimable space, and leaves the protection in place.
+
+Colors follow the terminal: 24-bit where COLORTERM says so, else 256, else
+16. NO_COLOR disables color; RINGS_COLORS=16|256|truecolor overrides.
 
 Full-disk scan:
 
@@ -58,11 +140,41 @@ Full-disk scan:
 
 Without root / Administrator, rings still works on what you can read.
 
-CSV and plain export include every directory, every temp/cache/log/journal/crash
-hit, and every file of 1 MiB or more. Tiny ordinary files are omitted.
+CSV and plain export include every directory, every waste hit (temp, cache,
+log, journal, crash), and every file of 1 MiB or more. Tiny ordinary files
+are omitted.
 
 KEYS:
 ";
+
+/// Built-in theme names wrapped into the OPTIONS column, so adding a theme
+/// cannot silently leave `--help` describing the old set.
+fn theme_list() -> String {
+    const INDENT: &str = "\n                         ";
+    const WIDTH: usize = 50;
+    let mut out = String::new();
+    let mut line = String::new();
+    for (i, name) in crate::tui::theme::names().iter().enumerate() {
+        let piece = if i == 0 {
+            format!("{name} (default)")
+        } else {
+            (*name).to_string()
+        };
+        if line.is_empty() {
+            line = piece;
+        } else if line.chars().count() + 2 + piece.chars().count() > WIDTH {
+            out.push_str(&line);
+            out.push(',');
+            out.push_str(INDENT);
+            line = piece;
+        } else {
+            line.push_str(", ");
+            line.push_str(&piece);
+        }
+    }
+    out.push_str(&line);
+    out
+}
 
 /// Logo + usage + the same key list the TUI overlay shows.
 pub fn help_text() -> String {
@@ -71,14 +183,20 @@ pub fn help_text() -> String {
         out.push('\n');
     }
     out.push('\n');
-    out.push_str(USAGE);
-    for line in KEY_LINES {
-        if line.is_empty() {
+    out.push_str(&USAGE.replace("{THEMES}", &theme_list()));
+    for (i, group) in KEY_GROUPS.iter().enumerate() {
+        if i > 0 {
             out.push('\n');
-        } else {
-            out.push_str("    ");
-            out.push_str(line);
-            out.push('\n');
+        }
+        out.push_str("  ");
+        out.push_str(&group.title.to_ascii_uppercase());
+        out.push('\n');
+        for (key, desc) in group.keys {
+            let pad = HELP_KEY_W.saturating_sub(key.chars().count());
+            out.push_str(&format!("    {key}{}  {desc}\n", " ".repeat(pad)));
+        }
+        if let Some(note) = group.note {
+            out.push_str(&format!("    {note}\n"));
         }
     }
     out
@@ -92,6 +210,9 @@ pub struct Cli {
     pub plain: bool,
     pub all_filesystems: bool,
     pub apparent: bool,
+    pub no_app_probe: bool,
+    pub offline: bool,
+    pub theme: Option<String>,
     pub help: bool,
     pub version: bool,
 }
@@ -110,9 +231,20 @@ impl Cli {
                     cli.csv = Some(PathBuf::from(file));
                 }
                 "--plain" | "--no-tui" => cli.plain = true,
+                "--offline" => cli.offline = true,
                 "--one-file-system" => cli.all_filesystems = false,
                 "--all-filesystems" => cli.all_filesystems = true,
                 "--apparent" => cli.apparent = true,
+                "--no-app-probe" => cli.no_app_probe = true,
+                "--theme" => {
+                    let name = it
+                        .next()
+                        .ok_or_else(|| "--theme requires a name".to_string())?;
+                    cli.theme = Some(name);
+                }
+                s if s.starts_with("--theme=") => {
+                    cli.theme = Some(s["--theme=".len()..].to_string());
+                }
                 "-h" | "--help" | "help" => cli.help = true,
                 "-V" | "--version" => cli.version = true,
                 s if s.starts_with("--csv=") => {
@@ -138,6 +270,16 @@ impl Cli {
 
     pub fn one_file_system(&self) -> bool {
         !self.all_filesystems
+    }
+
+    /// Application analysis settings. Structural detection and the delete
+    /// safeguards always run; the flag gates content reads only.
+    pub fn app_options(&self) -> apps::Options {
+        if self.no_app_probe {
+            apps::Options::structural_only()
+        } else {
+            apps::Options::default()
+        }
     }
 
     /// TUI only when stdout is a TTY and no scripting flag is set.
@@ -179,8 +321,25 @@ mod tests {
         let cli = parse(&["--no-tui"]).unwrap();
         assert!(cli.plain);
 
+        let cli = parse(&["--no-app-probe", "/var"]).unwrap();
+        assert!(cli.no_app_probe);
+        assert!(!cli.app_options().probe, "header reads are off");
+
+        let cli = parse(&["/var"]).unwrap();
+        assert!(cli.app_options().probe, "probing is the default");
+
+        let cli = parse(&["--offline", "/"]).unwrap();
+        assert!(cli.offline);
+        assert_eq!(cli.path, Some(PathBuf::from("/")));
+
         let cli = parse(&["help"]).unwrap();
         assert!(cli.help);
+
+        let cli = parse(&["--theme", "nord", "/"]).unwrap();
+        assert_eq!(cli.theme.as_deref(), Some("nord"));
+        let cli = parse(&["--theme=mono"]).unwrap();
+        assert_eq!(cli.theme.as_deref(), Some("mono"));
+        assert!(parse(&["--theme"]).is_err());
     }
 
     #[test]
@@ -197,6 +356,20 @@ mod tests {
     }
 
     #[test]
+    fn no_path_is_the_picker_signal() {
+        assert!(
+            parse(&[]).unwrap().path.is_none(),
+            "no PATH means the TUI opens the directory picker"
+        );
+        assert_eq!(
+            parse(&["--offline"]).unwrap().path,
+            None,
+            "flags alone still leave the path unset"
+        );
+        assert_eq!(parse(&["/var"]).unwrap().path, Some(PathBuf::from("/var")));
+    }
+
+    #[test]
     fn help_text_contains_logo_and_key_bindings() {
         let text = help_text();
         assert!(
@@ -204,29 +377,68 @@ mod tests {
             "help must start from the shared logo"
         );
         for needle in [
-            "j k",
-            "Enter",
-            "Backspace",
-            "Space",
-            "f                     Temp",
-            "c                     delete collector",
-            "x                     confirm delete",
-            "e                     export",
-            "?  F1",
-            "q                     quit",
-            "Mouse",
-            "double-click",
+            "NAVIGATE",
+            "VIEWS",
+            "DELETE",
+            "PICKER",
+            "MOUSE",
+            "types DELETE",
             "--plain",
             "--no-tui",
+            "--offline",
+            "--theme",
+            "tokyo-night",
+            "tokyo-night-day",
+            "solarized-dark",
+            "catppuccin",
+            "NO_COLOR",
+            "GitHub Release",
+            "RINGS_NO_UPDATE",
+            "--no-app-probe",
+            "PostgreSQL",
+            "SQLite",
+            "MySQL",
+            "SQL Server",
+            "DBCC SHRINKFILE",
             "rings help",
         ] {
             assert!(text.contains(needle), "help missing {needle:?}:\n{text}");
         }
-        for line in KEY_LINES {
-            if line.is_empty() {
-                continue;
+        assert!(
+            !text.contains("{THEMES}"),
+            "the theme placeholder must be filled in:\n{text}"
+        );
+        for name in crate::tui::theme::names() {
+            assert!(text.contains(name), "help missing theme {name:?}:\n{text}");
+        }
+        for line in text.lines() {
+            assert!(
+                line.chars().count() <= 79,
+                "help line runs past 80 columns: {line:?}"
+            );
+        }
+        for group in KEY_GROUPS {
+            for (key, desc) in group.keys {
+                assert!(text.contains(key), "help missing key {key:?}");
+                assert!(text.contains(desc), "help missing {desc:?}");
             }
-            assert!(text.contains(line), "help missing key line {line:?}");
+        }
+    }
+
+    #[test]
+    fn key_table_fits_two_columns_on_eighty_cols() {
+        assert!(
+            2 * HELP_COL_W + 2 + 2 <= 78,
+            "two columns, a tight gap, and a margin must fit an 80-col box"
+        );
+        for group in KEY_GROUPS {
+            for (key, desc) in group.keys {
+                assert!(key.chars().count() <= HELP_KEY_W, "{key:?} is too wide");
+                assert!(desc.chars().count() <= HELP_DESC_W, "{desc:?} is too wide");
+            }
+            if let Some(note) = group.note {
+                assert!(note.chars().count() <= HELP_COL_W, "{note:?} is too wide");
+            }
         }
     }
 

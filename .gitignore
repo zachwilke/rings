@@ -3,3 +3,16 @@
 **/*.rs.bk
 .idea
 .vscode
+
+# TUI export written to the cwd by the e key
+rings-export.csv
+
+# dpkg-buildpackage leftovers (official debian/ source package)
+debian/.debhelper/
+debian/debhelper-build-stamp
+debian/files
+debian/rings/
+debian/rings.substvars
+debian/cargo_home/
+debian/cargo_registry/
+debian/Cargo.lock.save

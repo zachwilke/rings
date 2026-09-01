@@ -19,3 +19,35 @@ jobs:
 
       - name: Test
         run: cargo test
+
+      - name: Syntax-check install.sh
+        if: runner.os != 'Windows'
+        run: |
+          sh -n install.sh
+          if command -v dash >/dev/null 2>&1; then dash -n install.sh; fi
+
+      - name: Parse install.ps1
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $errs = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $pwd 'install.ps1'), [ref]$null, [ref]$errs)
+          if ($errs.Count -gt 0) { $errs | ForEach-Object { $_.ToString() }; exit 1 }
+
+      - name: Smoke-test debian packaging
+        if: runner.os == 'Linux'
+        run: |
+          sh -n packaging/debian/build-deb.sh
+          sh -n packaging/debian/build-apt-repo.sh
+          sh -n packaging/debian/add-apt-repo.sh
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          grep -F "pkgver=$VERSION" packaging/aur/rings-bin/PKGBUILD
+          grep -F "pkgver = $VERSION" packaging/aur/rings-bin/.SRCINFO
+          dummy=$(mktemp)
+          printf '#!/bin/sh\necho rings-smoke\n' > "$dummy"
+          chmod +x "$dummy"
+          OUTDIR=$(mktemp -d)
+          OUTDIR="$OUTDIR" packaging/debian/build-deb.sh "$VERSION" amd64 "$dummy"
+          dpkg-deb -I "$OUTDIR/rings_${VERSION}_amd64.deb"
+          dpkg-deb -c "$OUTDIR/rings_${VERSION}_amd64.deb" | grep -E 'usr/bin/rings|usr/share/doc/rings/copyright'
+          ! dpkg-deb -f "$OUTDIR/rings_${VERSION}_amd64.deb" Depends | grep -q .

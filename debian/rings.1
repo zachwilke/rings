@@ -1,0 +1,194 @@
+.TH RINGS 1 "August 2026" "rings 0.2.0" "User Commands"
+.SH NAME
+rings \- DaisyDisk-style terminal disk-usage map
+.SH SYNOPSIS
+.B rings [options] [path]
+.PP
+.B rings help
+.SH DESCRIPTION
+.B rings
+scans a directory (or a single file) and shows a DaisyDisk-style radial
+sunburst of disk use beside a largest-first list. Each wedge is a file
+or folder, sized by what it uses on disk. Click or keyboard-select a
+wedge or row, drill in, mark waste, and delete only after an explicit
+confirm. Nothing is removed while you browse.
+.PP
+Given a
+.IR path ,
+rings scans it immediately. Started with no path in a terminal, it
+opens a directory picker in the current directory; pick a directory
+and press
+.B s
+to scan it. Piped or scripted runs with no path still scan the current
+directory.
+.PP
+When stdout is not a terminal (a pipe or redirect), rings prints a
+plain table automatically. The scripting flags
+.BR \-\-plain ,
+.BR \-\-csv ,
+and
+.B \-\-json
+never enter the TUI, even in a terminal.
+.PP
+The scan stays on one filesystem by default, skips Linux virtual mounts
+(\fI/proc\fP, \fI/sys\fP, \fI/dev\fP, \fI/run\fP), never follows
+symlinked directories, and counts hard-linked inodes once. Without
+root it scans what it can read.
+.PP
+Press
+.B ?
+or
+.B F1
+in the TUI for the full key list.
+.B rings help
+and
+.B rings \-\-help
+print the same list on stdout.
+.SH OPTIONS
+.TP
+.I path
+Directory or file to scan.
+.TP
+.B \-\-json
+Write the analyzed tree as JSON to stdout and exit.
+.TP
+.BI \-\-csv \ file
+Write findings CSV to
+.I file
+and exit (written to a temp name, then renamed).
+.TP
+.BR \-\-plain ", " \-\-no\-tui
+Print a parseable tab-separated table to stdout and exit.
+.TP
+.B \-\-offline
+Skip the GitHub Release update check that an interactive TUI launch
+otherwise runs.
+.TP
+.B \-\-one\-file\-system
+Stay on one filesystem (default).
+.TP
+.B \-\-all\-filesystems
+Descend into other mounted filesystems.
+.TP
+.B \-\-apparent
+Size by apparent bytes (st_size) instead of used blocks.
+.TP
+.BI \-\-theme \ name
+Color theme:
+.BR rings " (default),"
+.BR nord ,
+.BR gruvbox ,
+.BR dracula ,
+.BR solarized\-dark ,
+.BR mono .
+.TP
+.BR \-h ", " \-\-help ", " help
+Print the logo, usage, and every key binding.
+.TP
+.BR \-V ", " \-\-version
+Print the version and exit.
+.SH KEYS
+.B rings help
+is the canonical key list. A short summary:
+.TP
+.B j k
+Move the selection (also arrows, Page Up/Down,
+.BR g / G
+for first/last).
+.TP
+.B Enter
+Drill into the selected directory.
+.TP
+.B h
+Go up one directory (also Backspace).
+.TP
+.B \-
+Reopen the directory picker.
+.TP
+.B Space
+Mark or unmark for delete.
+.TP
+.B f
+Temp and cache findings.
+.TP
+.B c
+Delete collector.
+.TP
+.B x
+Confirm deletion from the collector. As root you must type DELETE;
+as a user, items go to trash.
+.TP
+.B e
+Export the current view to CSV.
+.TP
+.BR ? ", " F1
+Help overlay.
+.TP
+.B q
+Quit.
+.PP
+Mouse: click selects, double-click drills in, right-click opens a
+context menu, the wheel scrolls, hover highlights.
+.SH ENVIRONMENT
+.TP
+.B RINGS_NO_UPDATE
+Set to 1 to skip the GitHub Release update check (same as
+.BR \-\-offline ).
+.TP
+.B NO_COLOR
+Disable color (bold and reverse video only).
+.TP
+.B RINGS_COLORS
+Override color-depth detection:
+.BR 16 ,
+.BR 256 ,
+or
+.BR truecolor .
+.TP
+.B COLORTERM
+Used with the terminal type to detect 24-bit color.
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Scan or I/O failure.
+.TP
+.B 2
+Unknown option or other usage error.
+.SH FILES
+CSV export columns are
+.IR path , type , size_bytes , size_human , category
+and, for
+.BR \-\-csv ,
+.IR in_delete_collector .
+Every directory, every temp/cache/log/journal/crash hit, and every
+file of 1 MiB or more is included; tiny ordinary files are omitted.
+.SH EXAMPLES
+.TP
+Scan the whole disk (needs root for a complete picture):
+.B sudo rings /
+.TP
+Scan a single tree:
+.B rings /var/log
+.TP
+Parseable table, no TUI:
+.B rings \-\-plain /
+.TP
+JSON of the analyzed tree:
+.B rings \-\-json /srv
+.TP
+Findings CSV for scripts:
+.B rings \-\-csv findings.csv /
+.TP
+TUI without the update check:
+.B rings \-\-offline /home
+.SH SEE ALSO
+.BR du (1),
+.BR df (1),
+.BR ncdu (1)
+.SH AUTHOR
+Zach Wilke <zach@pinefall.dev>
+.SH COPYRIGHT
+Copyright \(co 2026 Zach Wilke. MIT License.

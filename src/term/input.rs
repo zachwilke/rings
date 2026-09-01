@@ -26,6 +26,20 @@ pub enum Event {
         x: u16,
         y: u16,
     },
+    /// Right button press: opens the context menu.
+    RightClick {
+        x: u16,
+        y: u16,
+    },
+    /// Scroll wheel: -1 for up, +1 for down.
+    Wheel {
+        delta: i8,
+    },
+    /// Pointer moved (any-motion tracking): drives hover highlights.
+    Move {
+        x: u16,
+        y: u16,
+    },
 }
 
 /// Wait up to `timeout_ms` for input. Returns all events decoded from the
@@ -138,13 +152,30 @@ fn decode_sgr_mouse(bytes: &[u8]) -> (Option<Event>, usize) {
             }
             b';' => field += 1,
             b'M' => {
-                if field == 2 && fields[0] & 0b1100_0011 == 0 {
-                    // button 0 press (no motion/wheel bits), 1-based coords
-                    let x = fields[1].saturating_sub(1).min(u16::MAX as u32) as u16;
-                    let y = fields[2].saturating_sub(1).min(u16::MAX as u32) as u16;
-                    return (Some(Event::Click { x, y }), i);
+                if field != 2 {
+                    return (None, i);
                 }
-                return (None, i);
+                // 1-based coords
+                let x = fields[1].saturating_sub(1).min(u16::MAX as u32) as u16;
+                let y = fields[2].saturating_sub(1).min(u16::MAX as u32) as u16;
+                let code = fields[0];
+                let ev = if code & 0b100_0000 != 0 {
+                    // Wheel: 64 up, 65 down (modifier bits 4/8/16 ignored).
+                    match code & 0b11 {
+                        0 => Some(Event::Wheel { delta: -1 }),
+                        1 => Some(Event::Wheel { delta: 1 }),
+                        _ => None,
+                    }
+                } else if code & 0b10_0000 != 0 {
+                    Some(Event::Move { x, y })
+                } else {
+                    match code & 0b11 {
+                        0 => Some(Event::Click { x, y }),
+                        2 => Some(Event::RightClick { x, y }),
+                        _ => None,
+                    }
+                };
+                return (ev, i);
             }
             b'm' => return (None, i),
             _ => return (None, i),
@@ -180,8 +211,33 @@ mod tests {
         assert_eq!(decode(b"\x1b[<0;10;5M"), vec![Event::Click { x: 9, y: 4 }]);
         // release ignored
         assert_eq!(decode(b"\x1b[<0;10;5m"), vec![]);
-        // wheel ignored
-        assert_eq!(decode(b"\x1b[<64;10;5M"), vec![]);
+    }
+
+    #[test]
+    fn decodes_wheel_and_motion() {
+        assert_eq!(decode(b"\x1b[<64;10;5M"), vec![Event::Wheel { delta: -1 }]);
+        assert_eq!(decode(b"\x1b[<65;10;5M"), vec![Event::Wheel { delta: 1 }]);
+        assert_eq!(
+            decode(b"\x1b[<35;10;5M"),
+            vec![Event::Move { x: 9, y: 4 }],
+            "motion with no button held"
+        );
+        assert_eq!(
+            decode(b"\x1b[<32;10;5M"),
+            vec![Event::Move { x: 9, y: 4 }],
+            "a drag still moves the pointer"
+        );
+        assert_eq!(decode(b"\x1b[<1;10;5M"), vec![], "middle button ignored");
+    }
+
+    #[test]
+    fn decodes_sgr_right_click_press_only() {
+        assert_eq!(
+            decode(b"\x1b[<2;10;5M"),
+            vec![Event::RightClick { x: 9, y: 4 }]
+        );
+        assert_eq!(decode(b"\x1b[<2;10;5m"), vec![], "release ignored");
+        assert_eq!(decode(b"\x1b[<1;10;5M"), vec![], "middle button ignored");
     }
 
     #[test]

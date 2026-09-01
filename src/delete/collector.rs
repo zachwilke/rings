@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use crate::apps::AppTag;
 use crate::classify::Category;
 use crate::delete::safeguard::{is_safeguarded, refuse_reason, SafeguardRefuse};
 
@@ -13,6 +14,9 @@ pub struct CollectorItem {
     pub size_bytes: u64,
     pub category: Category,
     pub node_id: usize,
+    /// Set when this path — or something beneath it — is live application
+    /// data. Copied from `Node::guard`; `Some` always means "refuse".
+    pub guard: Option<AppTag>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -48,6 +52,9 @@ impl Collector {
     /// Add a path. Safeguarded paths are refused and not stored.
     pub fn mark(&mut self, item: CollectorItem) -> Result<(), SafeguardRefuse> {
         if let Some(r) = refuse_reason(&item.path) {
+            return Err(r);
+        }
+        if let Some(r) = refuse_app_data(&item) {
             return Err(r);
         }
         if self.contains_path(&item.path) {
@@ -88,6 +95,22 @@ impl Collector {
     pub fn paths_set(&self) -> BTreeSet<PathBuf> {
         self.items.iter().map(|i| i.path.clone()).collect()
     }
+}
+
+/// Refuse anything that is, or contains, live application data. Databases
+/// are the case that makes this necessary: a PostgreSQL `base/` directory is
+/// both the largest thing on the disk and the one file tree where a delete is
+/// unrecoverable, so making rings point at it without this would be worse than
+/// not detecting it at all.
+pub fn refuse_app_data(item: &CollectorItem) -> Option<SafeguardRefuse> {
+    let tag = item.guard?;
+    if !tag.is_protected() {
+        return None;
+    }
+    Some(SafeguardRefuse {
+        path: item.path.clone(),
+        reason: tag.refusal(),
+    })
 }
 
 /// How the operator confirmed. `commit` requires this; building a collector does not delete.
@@ -197,6 +220,9 @@ pub fn commit(collector: &Collector, confirm: &Confirm) -> Result<CommitResult, 
                 "refusing commit: {} is safeguarded",
                 item.path.display()
             ));
+        }
+        if let Some(r) = refuse_app_data(item) {
+            return Err(format!("refusing commit: {} — {}", r.path.display(), r.reason));
         }
     }
 
@@ -359,6 +385,8 @@ fn now_utc_iso() -> String {
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}")
 }
 
+/// Append to the delete log. Never writes to stderr: the TUI owns the
+/// screen, and anything printed there lands on top of the sunburst.
 fn log_delete(path: &Path, size: u64, mode: CommitMode) {
     let line = format!(
         "rings deleted {} ({}) via {:?}\n",
@@ -366,7 +394,6 @@ fn log_delete(path: &Path, size: u64, mode: CommitMode) {
         crate::size::human_bytes(size),
         mode
     );
-    eprint!("{line}");
     if let Some(log_path) = delete_log_path() {
         if let Some(parent) = log_path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -462,6 +489,7 @@ mod tests {
             size_bytes: size,
             category: Category::Temp,
             node_id: 0,
+            guard: None,
         }
     }
 

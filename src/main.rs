@@ -8,7 +8,7 @@ use rings::cli::{help_text, Cli};
 use rings::csv_export::write_csv;
 use rings::json::tree_to_json;
 use rings::plain::render_plain;
-use rings::scan::{scan_with_progress, WalkEvent, WalkOptions};
+use rings::scan::{spawn_scan, WalkEvent, WalkOptions};
 use rings::sys;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -29,6 +29,14 @@ fn main() {
         println!("rings {VERSION}");
         return;
     }
+    if let Some(name) = &cli.theme {
+        if let Err(e) = rings::tui::theme::set(name) {
+            eprintln!("rings: {e}");
+            std::process::exit(2);
+        }
+    }
+    rings::update::cleanup_replaced_exe();
+    rings::update::maybe_offer_and_apply(&cli);
     if let Err(e) = run(cli) {
         eprintln!("rings: {e}");
         std::process::exit(1);
@@ -39,6 +47,7 @@ fn run(cli: Cli) -> Result<(), String> {
     let path = cli.scan_path();
     let opts = WalkOptions {
         one_file_system: cli.one_file_system(),
+        apps: cli.app_options(),
         root_dev_override: None,
     };
 
@@ -66,7 +75,7 @@ fn run(cli: Cli) -> Result<(), String> {
         return Ok(());
     }
 
-    rings::tui::run(path, opts, cli.apparent)
+    rings::tui::run(cli.path.clone(), opts, cli.apparent)
 }
 
 fn scan_headless(
@@ -74,9 +83,7 @@ fn scan_headless(
     opts: WalkOptions,
     show_progress: bool,
 ) -> Result<rings::scan::Tree, String> {
-    let (tx, rx) = mpsc::channel();
-    let path_owned = path.to_path_buf();
-    std::thread::spawn(move || scan_with_progress(path_owned, opts, tx));
+    let rx = spawn_scan(path.to_path_buf(), opts);
 
     let mut printed = false;
     loop {

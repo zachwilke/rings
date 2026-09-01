@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use crate::dto::finding_rows;
 use crate::scan::Tree;
 
-pub const PLAIN_HEADER: &str = "path\ttype\tsize_bytes\tsize_human\tcategory";
+pub const PLAIN_HEADER: &str =
+    "path\ttype\tsize_bytes\tsize_human\tcategory\tapplication\trole";
 
 /// Same row rules as CSV (dirs + waste hits + files ≥ 1 MiB), largest first.
 pub fn render_plain(tree: &Tree, subtree: usize) -> String {
@@ -29,6 +30,10 @@ pub fn render_plain(tree: &Tree, subtree: usize) -> String {
         out.push_str(&row.size_human);
         out.push('\t');
         out.push_str(row.category.as_str());
+        out.push('\t');
+        out.push_str(row.app.map(|t| t.kind.as_str()).unwrap_or("-"));
+        out.push('\t');
+        out.push_str(row.app.map(|t| t.role.as_str()).unwrap_or("-"));
         out.push('\n');
     }
     out

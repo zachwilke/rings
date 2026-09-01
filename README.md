@@ -12,16 +12,68 @@
 
 A DaisyDisk-style disk map in one tiny static binary. Scan a path, see a colorful sunburst of what's eating the disk, drill in, and clear waste — with nothing deleted until you explicitly confirm.
 
+![rings scanning a home directory: a Braille-dot sunburst beside a largest-first list, with the footer showing totals and clickable buttons](docs/rings-browse.png)
+
+A 178 GB home directory. Every wedge is a file or folder sized by what it uses on disk; color follows depth, and temp, cache, log, journal, and crash paths get their own hues. Click a wedge or a row to select it, double-click to drill in, right-click for a context menu. (File names blurred.)
+
 Works on Linux (Debian, Ubuntu, RHEL/Fedora/CentOS, Arch), Raspberry Pi OS / Raspbian (64-bit and 32-bit), macOS, and Windows PowerShell.
 
 ## Install
 
+Detect OS/arch and install the matching binary from the latest GitHub Release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zachwilke/rings/main/install.sh | sh
+```
+
+```powershell
+irm https://raw.githubusercontent.com/zachwilke/rings/main/install.ps1 | iex
+```
+
+The one-liner lives on `main` (so the platform map stays current) and fetches the latest published release, not a pinned tag. Pin with `RING_VERSION=v0.2.0`; install to a chosen directory with `RING_PREFIX`. Unix needs `curl` or `wget`, plus `xz` (`apt install xz-utils` / `brew install xz`).
+
+The Unix installer writes `/usr/local/bin/rings` (may ask for sudo once) so `sudo rings /` works. If it cannot write there, it falls back to `~/.local/bin` and prints the full-path next command (`sudo ~/.local/bin/rings /`).
+
 Linux downloads are one static musl binary per arch — the same file for Debian/Ubuntu, RHEL/Fedora/CentOS, and Arch. No glibc version soup, no distro repo.
+
+Homebrew (macOS and Linux):
+
+```bash
+brew install zachwilke/rings/rings
+```
+
+Arch (AUR):
+
+```bash
+yay -S rings-bin
+```
+
+AUR publish may still be pending the first AUR account push.
+
+Debian/Ubuntu (GitHub Pages apt repo):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zachwilke/rings/main/packaging/debian/add-apt-repo.sh | sudo sh
+sudo apt install rings
+```
+
+Official Debian / Ubuntu / Raspberry Pi OS archive inclusion is in progress (ITP); until NEW, those archives do not ship rings.
+
+Fallback (`.deb` from the GitHub Release):
+
+```bash
+curl -fsSL -o rings.deb https://github.com/zachwilke/rings/releases/download/v0.2.0/rings_0.2.0_amd64.deb
+sudo apt install ./rings.deb
+```
+
+arm64: `rings_0.2.0_arm64.deb`. armhf: `rings_0.2.0_armhf.deb`.
+
+Manual per-platform download (fallback):
 
 ### Linux
 
 ```bash
-curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.2/rings-x86_64-linux-musl.xz | xz -d > rings
+curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.2.0/rings-x86_64-linux-musl.xz | xz -d > rings
 chmod +x rings
 sudo ./rings /
 ```
@@ -34,11 +86,11 @@ On aarch64 machines (servers, 64-bit Pi OS) use `rings-aarch64-linux-musl.xz` in
 
 ```bash
 # 64-bit Raspberry Pi OS
-curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.2/rings-aarch64-linux-musl.xz | xz -d > rings
+curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.2.0/rings-aarch64-linux-musl.xz | xz -d > rings
 # 32-bit Raspberry Pi OS (Pi 2/3/4)
-# curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.2/rings-armv7-linux-musleabihf.xz | xz -d > rings
+# curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.2.0/rings-armv7-linux-musleabihf.xz | xz -d > rings
 # Pi 1 / Zero (armv6)
-# curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.2/rings-arm-linux-musleabihf.xz | xz -d > rings
+# curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.2.0/rings-arm-linux-musleabihf.xz | xz -d > rings
 chmod +x rings
 sudo ./rings /
 ```
@@ -47,7 +99,7 @@ sudo ./rings /
 
 ```bash
 # Apple Silicon
-curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.1.2/rings-aarch64-apple-darwin.xz | xz -d > rings
+curl -fsSL https://github.com/zachwilke/rings/releases/download/v0.2.0/rings-aarch64-apple-darwin.xz | xz -d > rings
 # Intel: rings-x86_64-apple-darwin.xz
 chmod +x rings
 sudo ./rings /
@@ -56,7 +108,7 @@ sudo ./rings /
 ### Windows (PowerShell)
 
 ```powershell
-irm https://github.com/zachwilke/rings/releases/download/v0.1.2/rings-x86_64-pc-windows-msvc.exe.zip -OutFile rings.zip
+irm https://github.com/zachwilke/rings/releases/download/v0.2.0/rings-x86_64-pc-windows-msvc.exe.zip -OutFile rings.zip
 Expand-Archive -Force rings.zip .
 .\rings.exe C:\
 .\rings.exe --plain C:\
@@ -78,14 +130,22 @@ We deliberately skip UPX: it shrinks the download but needs extra memory and dis
 ```bash
 sudo rings /           # full-disk scan (Linux, Raspberry Pi OS, macOS)
 rings.exe C:\          # Windows PowerShell (Administrator for the whole disk)
-rings /var/log         # any path; default is .
+rings /var/log         # any path
+sudo rings             # no path: pick the directory to scan first
 rings help             # logo, usage, and every key binding
 rings --plain /        # parseable table to stdout, no TUI
+rings --offline /      # TUI without the GitHub Release update check
 rings --csv out.csv /  # findings CSV for scripts, then exit
 rings --json /srv      # analyzed tree as JSON
 ```
 
+Given a path, rings scans it straight away. Started with no path in a terminal, it opens a vim-style directory picker in the current directory instead: `j` / `k` to move, `Enter` (or `l`) to open a directory, `h` / Backspace to go up, `s` to scan the highlighted directory. Piped or scripted runs with no path still scan the current directory, unchanged.
+
+From a finished scan, `-` (or the **Picker** button) reopens the picker at the directory you are browsing, so you can scan somewhere else without restarting rings. `Esc` — or **Back to scan** — returns to the scan you left, untouched; scanning a new directory replaces it.
+
 When stdout is not a terminal (a pipe or redirect), rings prints the plain table automatically — no TUI, no spinner. `--plain` / `--no-tui`, `--csv`, and `--json` never enter the TUI, even in a terminal.
+
+On an interactive TUI launch, rings asks GitHub Releases whether a newer version is out (about two seconds, then gives up) and offers to install it in place. `--plain`, `--json`, `--csv`, pipes, `--help`, and `--version` never check and never prompt. Skip with `--offline` or `RINGS_NO_UPDATE=1`. The check uses `curl` or `wget` (PowerShell / `curl.exe` on Windows) — no extra libraries. If the install path is not writable, rings prints the installer one-liner instead of sudoing.
 
 rings stays on one filesystem (`--all-filesystems` to cross), skips Linux virtual mounts (`/proc` `/sys` `/dev` `/run`; `/dev` on macOS), never follows symlinked directories, counts hard-linked inodes once, and counts permission errors instead of crashing. Without root it scans what it can read and reminds you `sudo rings /` (or Administrator on Windows) sees everything.
 
@@ -95,9 +155,17 @@ Press `?` or `F1` in the TUI for the full key list (the footer always hints `? h
 | --- | --- |
 | `j` `k` / arrows — move | click a slice or row — select |
 | Enter — drill in | double-click — drill in |
-| `h` / Backspace — go up | click the footer buttons |
-| Space — mark for delete · `f` — temp & cache · `c` — collector | |
-| `x` — confirm delete · `e` — export CSV · `?` `F1` — help · `q` — quit | |
+| `h` / Backspace — go up · `-` — picker | right-click — context menu |
+| Space — mark for delete · `f` — temp & cache · `c` — collector | click the footer buttons |
+| `x` — confirm delete · `e` — export CSV · `?` `F1` — help · `q` — quit | click a breadcrumb — jump |
+
+In the picker: `j` `k` move, `Enter` opens a directory, `h` goes up, `s` scans the highlighted one, `Esc` goes back to the scan you came from.
+
+Hovering highlights rows, slices, and buttons; hovering a slice shows its path, size, and share of its parent in the footer. The scroll wheel moves the cursor. Right-click any slice, row, or picker entry for a context menu — open, mark for delete, or delete that file or directory. Deleting from the menu marks the item and opens the same confirm modal as `x`; it never unlinks on the click.
+
+## Themes and color
+
+`--theme nord` (also `gruvbox`, `dracula`, `solarized-dark`, `mono`; default `rings`). Color depth follows the terminal: 24-bit where `COLORTERM`, `TERM_PROGRAM`, or `WT_SESSION` say so, 256 colors for other xterm-alikes, 16 for the Linux console. `NO_COLOR` turns color off (bold and reverse video only); `RINGS_COLORS=16|256|truecolor` overrides detection.
 
 ## Delete, carefully
 

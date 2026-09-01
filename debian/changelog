@@ -1,0 +1,5 @@
+rings (0.2.0-1) UNRELEASED; urgency=low
+
+  * Initial Debian packaging. (Closes: #1146333)
+
+ -- Zach Wilke <zach@pinefall.dev>  Mon, 31 Aug 2026 14:45:05 +0000

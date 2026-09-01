@@ -1,0 +1,27 @@
+#!/usr/bin/make -f
+# Official Debian source package: build from this tree with Debian rustc,
+# cargo, and librust-libc-dev. Network-free. Not the musl-wrap path in
+# packaging/debian/.
+
+%:
+	dh $@ --buildsystem=cargo
+
+# Cargo.lock pins crates.io checksums. Drop it so the Debian cargo wrapper
+# resolves against packaged crates only. Restore on clean so an in-tree
+# `debian/rules` run does not lose the lockfile.
+execute_before_dh_auto_configure:
+	if [ -f Cargo.lock ]; then \
+		cp -a Cargo.lock debian/Cargo.lock.save; \
+		rm -f Cargo.lock; \
+	fi
+
+execute_after_dh_auto_clean:
+	if [ -f debian/Cargo.lock.save ]; then \
+		mv debian/Cargo.lock.save Cargo.lock; \
+	fi
+
+# tempfile is a crates.io test helper with a large dep tree. The installed
+# binary links libc. Upstream CI runs the suite; debian/tests smokes the
+# installed binary.
+override_dh_auto_test:
+	@echo "skipping cargo test (tempfile is test-only; see debian/tests)"

@@ -1,0 +1,30 @@
+Source: rings
+Section: utils
+Priority: optional
+Maintainer: Zach Wilke <zach@pinefall.dev>
+Build-Depends:
+ debhelper-compat (= 13),
+ dh-cargo,
+ cargo,
+ rustc (>= 1.88),
+ librust-libc-dev
+Standards-Version: 4.7.4
+Homepage: https://github.com/zachwilke/rings
+Vcs-Browser: https://github.com/zachwilke/rings
+Vcs-Git: https://github.com/zachwilke/rings.git
+Rules-Requires-Root: no
+X-Cargo-Crate: rings
+
+Package: rings
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Built-Using: ${cargo:Built-Using}
+Static-Built-Using: ${cargo:Static-Built-Using}
+Description: DaisyDisk-style terminal disk-usage map
+ rings scans a path and shows a DaisyDisk-style sunburst of disk use
+ plus a largest-first list. Drill into directories, mark waste, and
+ delete only after an explicit confirm.
+ .
+ On Unix the only library dependency is libc. rings help prints the
+ full key list. --plain, --csv, and --json write parseable output
+ without opening the TUI.

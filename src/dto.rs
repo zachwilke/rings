@@ -4,6 +4,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+use crate::apps::AppTag;
 use crate::classify::Category;
 use crate::constants::EXPORT_FILE_MIN_BYTES;
 use crate::scan::Tree;
@@ -17,6 +18,8 @@ pub struct FindingRow {
     pub size_human: String,
     pub category: Category,
     pub in_delete_collector: bool,
+    /// Application context, when rings recognised the file.
+    pub app: Option<AppTag>,
 }
 
 /// Include every directory, every waste hit, and files at/above the size floor.
@@ -38,6 +41,7 @@ pub fn finding_rows(tree: &Tree, subtree: usize, collector: &BTreeSet<PathBuf>) 
                 size_human: human_bytes(n.used),
                 category: n.category,
                 in_delete_collector: collector.contains(&n.path),
+                app: n.app,
             });
         }
         // Children are size-sorted; push reversed so rows come out in order.

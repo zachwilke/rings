@@ -8,7 +8,10 @@ use std::path::{Path, PathBuf};
 use crate::dto::{finding_rows, FindingRow};
 use crate::scan::Tree;
 
-pub const CSV_HEADER: &str = "path,type,size_bytes,size_human,category,in_delete_collector";
+/// Application columns are appended, never inserted, so an existing
+/// column index in someone's script keeps meaning what it did.
+pub const CSV_HEADER: &str =
+    "path,type,size_bytes,size_human,category,in_delete_collector,application,role,reclaim";
 
 /// Write findings for `subtree` to `dest`. Uses a sibling temp file, then rename.
 pub fn write_csv(
@@ -42,6 +45,12 @@ pub fn render_csv(rows: &[FindingRow]) -> String {
         } else {
             "false"
         });
+        out.push(',');
+        out.push_str(row.app.map(|t| t.kind.as_str()).unwrap_or(""));
+        out.push(',');
+        out.push_str(row.app.map(|t| t.role.as_str()).unwrap_or(""));
+        out.push(',');
+        out.push_str(row.app.map(|t| t.reclaim().as_str()).unwrap_or(""));
         out.push('\n');
     }
     out
@@ -109,7 +118,10 @@ mod tests {
                 "size_bytes",
                 "size_human",
                 "category",
-                "in_delete_collector"
+                "in_delete_collector",
+                "application",
+                "role",
+                "reclaim"
             ]
         );
         let rows = [FindingRow {
@@ -119,11 +131,12 @@ mod tests {
             size_human: "100 B".into(),
             category: Category::Temp,
             in_delete_collector: false,
+            app: None,
         }];
         let text = render_csv(&rows);
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], CSV_HEADER);
-        assert_eq!(lines[1], "/tmp/foo,dir,100,100 B,temp,false");
+        assert_eq!(lines[1], "/tmp/foo,dir,100,100 B,temp,false,,,");
     }
 
     #[test]
