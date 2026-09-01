@@ -1,0 +1,3 @@
+Test-Command: rings --version && rings --help | grep -q sunburst
+Depends: @
+Restrictions: superficial
