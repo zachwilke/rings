@@ -815,8 +815,17 @@ mod tests {
         assert!(cluster.data_bytes > 0);
         assert!(cluster.temp_bytes > 0);
         assert!(cluster.log_bytes > 0);
-        // The headline claim: what is reclaimable excludes table data entirely.
-        assert!(cluster.reclaimable_bytes() < cluster.data_bytes + cluster.wal_bytes);
+        // The headline claim: whatever the file sizes happen to be, table
+        // data and WAL are never counted toward what can be reclaimed.
+        // (Stated directly rather than as a size comparison — directory
+        // inodes count toward Data on Linux but not on Windows, so a
+        // fixture-relative assertion here only held on one platform.)
+        let reclaimable = cluster.reclaimable_bytes();
+        assert_eq!(reclaimable, cluster.temp_bytes + cluster.log_bytes);
+        assert!(
+            reclaimable < cluster.total_bytes(),
+            "a cluster holding table data is never entirely reclaimable"
+        );
     }
 
     #[test]
