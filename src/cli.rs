@@ -48,7 +48,7 @@ pub const KEY_GROUPS: &[KeyGroup] = &[
             ("Space  d", "mark or unmark"),
             ("x", "confirm from collector"),
         ],
-        note: Some("Never automatic · live DB files refused"),
+        note: Some("root types DELETE · live DB refused"),
     },
     KeyGroup {
         title: "Picker",
