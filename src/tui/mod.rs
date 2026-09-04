@@ -146,6 +146,32 @@ fn handle_key(app: &mut App, key: Key) {
         return;
     }
 
+    if matches!(app.view, View::Settings) {
+        if app.settings_edit.is_some() {
+            match key {
+                Key::Esc => {
+                    app.settings_edit = None;
+                    app.status = "export folder edit cancelled".into();
+                }
+                Key::Backspace => app.settings_backspace(),
+                Key::Enter => app.settings_commit_edit(),
+                Key::Char(c) => app.settings_type(c),
+                _ => {}
+            }
+        } else {
+            match key {
+                Key::Char('M') | Key::Char('q') | Key::Esc => app.close_settings(),
+                Key::Char('j') | Key::Down => app.settings_move(1),
+                Key::Char('k') | Key::Up => app.settings_move(-1),
+                Key::Char('h') | Key::Left => app.settings_cycle_theme(-1),
+                Key::Char('l') | Key::Right => app.settings_cycle_theme(1),
+                Key::Enter => app.settings_activate(),
+                _ => {}
+            }
+        }
+        return;
+    }
+
     if matches!(app.view, View::Help) {
         if matches!(
             key,
@@ -173,6 +199,7 @@ fn handle_key(app: &mut App, key: Key) {
     }
 
     match key {
+        Key::Char('M') => app.open_settings(),
         Key::Enter => app.drill(),
         Key::Backspace | Key::Left | Key::Char('h') => go_back(app),
         Key::Char(' ') | Key::Char('d') => app.toggle_mark_selected(),
@@ -1454,18 +1481,28 @@ mod tests {
 
         let mut buf = Buffer::new(100, 28, th.bg);
         let sun = draw::draw(&mut buf, &app);
-        assert_eq!(sun.layout, Layout::Sunburst, "sunburst is still the default");
+        assert_eq!(
+            sun.layout,
+            Layout::Sunburst,
+            "sunburst is still the default"
+        );
 
         app.cycle_layout();
         assert_eq!(app.layout, Layout::Icicle);
-        assert!(app.status.contains("icicle"), "the toggle says where it went");
+        assert!(
+            app.status.contains("icicle"),
+            "the toggle says where it went"
+        );
 
         let mut buf = Buffer::new(100, 28, th.bg);
         let ice = draw::draw(&mut buf, &app);
         let screen = buf.text();
 
         assert_eq!(ice.layout, Layout::Icicle);
-        assert!(!ice.slices.is_empty(), "the same slice list drives both maps");
+        assert!(
+            !ice.slices.is_empty(),
+            "the same slice list drives both maps"
+        );
         assert!(
             ice.list.width > sun.list.width,
             "the icicle gives the list the full width: {} vs {}",
@@ -1550,5 +1587,29 @@ mod tests {
         assert_eq!(app.layout, Layout::Icicle);
         app.cycle_layout();
         assert_eq!(app.layout, Layout::Sunburst);
+    }
+
+    #[test]
+    fn m_opens_a_settings_overlay_that_blocks_click_through() {
+        let mut app = App::new(std::path::PathBuf::from("."), false);
+        app.view = View::Browse;
+        handle_key(&mut app, Key::Char('M'));
+        assert_eq!(app.view, View::Settings);
+
+        let th = theme::current();
+        let mut buf = Buffer::new(90, 28, th.bg);
+        let hits = draw::draw(&mut buf, &app);
+        let screen = buf.text();
+        assert!(screen.contains("Menu · settings"), "{screen}");
+        assert!(screen.contains("CSV export folder"), "{screen}");
+        assert!(hits.buttons.is_empty(), "the modal blocks hidden controls");
+
+        handle_key(&mut app, Key::Char('j'));
+        handle_key(&mut app, Key::Enter);
+        assert!(app.settings_edit.is_some());
+        handle_key(&mut app, Key::Esc);
+        assert!(app.settings_edit.is_none());
+        handle_key(&mut app, Key::Char('M'));
+        assert_eq!(app.view, View::Browse);
     }
 }

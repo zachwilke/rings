@@ -7,6 +7,7 @@ use crate::csv_export::write_csv;
 use crate::delete::{commit, needs_typed_confirm, Collector, CollectorItem, Confirm};
 use crate::dto::waste_hits;
 use crate::scan::{Progress, Tree};
+use crate::settings::Settings;
 use crate::size::human_bytes;
 use crate::sys;
 use crate::tui::picker::Picker;
@@ -24,6 +25,7 @@ pub enum View {
     Collector,
     Confirm { typed: String },
     Help,
+    Settings,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -180,6 +182,9 @@ pub struct App {
     pub pending_scan: Option<PathBuf>,
     pub menu: Option<Menu>,
     pub hover: Option<Hover>,
+    pub settings: Settings,
+    pub settings_selected: usize,
+    pub settings_edit: Option<String>,
 }
 
 impl App {
@@ -209,6 +214,9 @@ impl App {
             pending_scan: None,
             menu: None,
             hover: None,
+            settings: Settings::load(),
+            settings_selected: 0,
+            settings_edit: None,
         }
     }
 
@@ -525,6 +533,71 @@ impl App {
         self.view = self.previous_view.clone();
     }
 
+    pub fn open_settings(&mut self) {
+        self.previous_view = self.view.clone();
+        self.settings_selected = 0;
+        self.settings_edit = None;
+        self.view = View::Settings;
+    }
+
+    pub fn close_settings(&mut self) {
+        self.settings_edit = None;
+        self.view = self.previous_view.clone();
+    }
+
+    pub fn settings_move(&mut self, delta: isize) {
+        self.settings_selected = step(self.settings_selected, delta, 2);
+    }
+
+    pub fn settings_cycle_theme(&mut self, delta: isize) {
+        self.settings.cycle_theme(delta);
+        let _ = crate::tui::theme::set(&self.settings.theme);
+        self.save_settings_status();
+    }
+
+    pub fn settings_activate(&mut self) {
+        if self.settings_selected == 0 {
+            self.settings_cycle_theme(1);
+        } else {
+            self.settings_edit = Some(self.settings.export_dir.display().to_string());
+            self.status = "editing export folder · Enter save · Esc cancel".into();
+        }
+    }
+
+    pub fn settings_type(&mut self, ch: char) {
+        if let Some(value) = &mut self.settings_edit {
+            if !ch.is_control() {
+                value.push(ch);
+            }
+        }
+    }
+
+    pub fn settings_backspace(&mut self) {
+        if let Some(value) = &mut self.settings_edit {
+            value.pop();
+        }
+    }
+
+    pub fn settings_commit_edit(&mut self) {
+        let Some(value) = self.settings_edit.take() else {
+            return;
+        };
+        match self.settings.set_export_dir(&value) {
+            Ok(()) => self.save_settings_status(),
+            Err(e) => {
+                self.status = e;
+                self.settings_edit = Some(value);
+            }
+        }
+    }
+
+    fn save_settings_status(&mut self) {
+        match self.settings.save() {
+            Ok(path) => self.status = format!("settings saved to {}", path.display()),
+            Err(e) => self.status = format!("settings changed for this session; save failed: {e}"),
+        }
+    }
+
     /// Animation frame for the scan spinner, ~8 fps.
     pub fn spin_frame(&self, frames: usize) -> usize {
         (self.started.elapsed().as_millis() / 120) as usize % frames
@@ -633,6 +706,7 @@ impl App {
     pub fn go_up(&mut self) {
         match self.view {
             View::Help => self.close_help(),
+            View::Settings => self.close_settings(),
             View::Findings | View::Collector | View::Databases => {
                 self.view = View::Browse;
             }
@@ -847,7 +921,9 @@ impl App {
             .as_ref()
             .ok_or_else(|| "scan is not finished".to_string())?;
         let id = tree.node_at(&self.cwd);
-        let dest = PathBuf::from(TUI_EXPORT_FILENAME);
+        std::fs::create_dir_all(&self.settings.export_dir)
+            .map_err(|e| format!("cannot create export folder: {e}"))?;
+        let dest = self.settings.export_dir.join(TUI_EXPORT_FILENAME);
         let n = write_csv(&dest, tree, id, &self.collector.paths_set())?;
         self.status = format!("wrote {n} rows to {}", dest.display());
         Ok(dest)

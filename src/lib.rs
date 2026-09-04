@@ -11,6 +11,7 @@ pub mod json;
 pub mod logo;
 pub mod plain;
 pub mod scan;
+pub mod settings;
 pub mod size;
 pub mod sys;
 pub mod term;

@@ -37,6 +37,7 @@ pub const KEY_GROUPS: &[KeyGroup] = &[
             ("L", "sunburst / icicle"),
             ("c", "delete collector"),
             ("e", "export view to CSV"),
+            ("M", "settings menu"),
             ("?  F1", "this help"),
             ("q", "quit"),
         ],

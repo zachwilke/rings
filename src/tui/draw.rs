@@ -53,6 +53,11 @@ pub fn draw(buf: &mut Buffer, app: &App) -> HitMap {
             HitMap::empty()
         }
         View::Help => draw_help(buf),
+        View::Settings => {
+            draw_main(buf, app);
+            draw_settings(buf, app);
+            HitMap::empty()
+        }
         View::Confirm { .. } => {
             // The modal covers the view: only its own buttons are targets.
             draw_main(buf, app);
@@ -109,6 +114,81 @@ fn draw_menu(buf: &mut Buffer, menu: &Menu, hover: Option<Hover>, hits: &mut Hit
         buf.print_styled(inner.x + 1, y, &text, fg, row_bg, sel);
         hits.menu.push((rect, i));
     }
+}
+
+fn draw_settings(buf: &mut Buffer, app: &App) {
+    let th = theme::current();
+    let w = 72.min(buf.width.saturating_sub(4));
+    let h = 14.min(buf.height.saturating_sub(2));
+    let rect = Rect {
+        x: (buf.width.saturating_sub(w)) / 2,
+        y: (buf.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    buf.fill(rect, th.bg);
+    let inner = draw_box(buf, rect, " Menu · settings ", th.accent, th.accent);
+    buf.print(
+        inner.x + 1,
+        inner.y,
+        "j/k select · h/l change · Enter edit · M/Esc close",
+        th.muted,
+        th.bg,
+    );
+
+    let rows = [
+        ("Theme", app.settings.theme.clone()),
+        (
+            "CSV export folder",
+            app.settings_edit
+                .clone()
+                .unwrap_or_else(|| app.settings.export_dir.display().to_string()),
+        ),
+    ];
+    for (i, (label, value)) in rows.iter().enumerate() {
+        let y = inner.y + 3 + i as u16 * 2;
+        let selected = app.settings_selected == i;
+        let row_bg = if selected { th.select_bg } else { th.bg };
+        if selected {
+            buf.fill(
+                Rect {
+                    x: inner.x + 1,
+                    y,
+                    width: inner.width.saturating_sub(2),
+                    height: 1,
+                },
+                row_bg,
+            );
+        }
+        buf.print_styled(inner.x + 2, y, label, th.text, row_bg, selected);
+        let marker = if i == 0 {
+            format!("‹ {value} ›")
+        } else if app.settings_edit.is_some() {
+            format!("> {value}▏")
+        } else {
+            value.clone()
+        };
+        buf.print(
+            inner.x + 25,
+            y,
+            &truncate(&marker, inner.width.saturating_sub(27) as usize),
+            th.accent,
+            row_bg,
+        );
+    }
+
+    let note = if app.settings_edit.is_some() {
+        "Type a folder path. ~ is expanded. Enter creates/saves it; Esc cancels."
+    } else {
+        "Changes persist in the rings user config file. --theme still overrides startup."
+    };
+    buf.print(
+        inner.x + 1,
+        inner.bottom().saturating_sub(2),
+        &truncate(note, inner.width.saturating_sub(2) as usize),
+        th.muted,
+        th.bg,
+    );
 }
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -642,7 +722,13 @@ fn draw_databases(buf: &mut Buffer, app: &App, area: Rect, hits: &mut HitMap) {
             row_bg,
         );
         x = buf.print(x, y, &format!("{:<9}", entry.kind.as_str()), color, row_bg);
-        x = buf.print(x, y, &format!("{:<6}", entry.role.as_str()), th.muted, row_bg);
+        x = buf.print(
+            x,
+            y,
+            &format!("{:<6}", entry.role.as_str()),
+            th.muted,
+            row_bg,
+        );
         let label_w = list.width.saturating_sub(x - list.x + right_w) as usize;
         buf.print_styled(x, y, &truncate(&entry.label, label_w), th.text, row_bg, sel);
 

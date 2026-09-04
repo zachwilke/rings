@@ -29,6 +29,8 @@ fn main() {
         println!("rings {VERSION}");
         return;
     }
+    let saved_settings = rings::settings::Settings::load();
+    let _ = rings::tui::theme::set(&saved_settings.theme);
     if let Some(name) = &cli.theme {
         if let Err(e) = rings::tui::theme::set(name) {
             eprintln!("rings: {e}");
