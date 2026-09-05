@@ -1,7 +1,7 @@
 # Maintainer: Zach Wilke <zach@pinefall.dev>
 # Binary package: wraps the static musl GitHub Release, no rust/cargo.
 pkgname=rings-bin
-pkgver=0.3.1
+pkgver=0.3.2
 pkgrel=1
 pkgdesc="DaisyDisk-style disk usage TUI"
 arch=('x86_64' 'aarch64' 'armv7h')
