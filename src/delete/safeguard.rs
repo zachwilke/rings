@@ -258,7 +258,11 @@ mod tests {
         assert!(refuse_reason(Path::new("/System")).is_some());
         assert!(refuse_reason(Path::new("/System/Library")).is_some());
         assert!(refuse_reason(Path::new("/private/etc/hosts")).is_some());
+        assert!(refuse_reason(Path::new("/private/var/vm/sleepimage")).is_some());
+        assert!(refuse_reason(Path::new("/private/var/db")).is_some());
         assert!(refuse_reason(Path::new("/private/tmp/x")).is_none());
+        assert!(refuse_reason(Path::new("/private/var/folders/zz")).is_none());
+        assert!(refuse_reason(Path::new("/private/var/log/system.log")).is_none());
     }
 
     #[cfg(windows)]

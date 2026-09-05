@@ -18,21 +18,42 @@ const POLL_MS: i32 = 80;
 
 /// `path` is the scan root. `None` opens the directory picker at the current
 /// directory so `rings` alone browses before it walks.
-pub fn run(path: Option<PathBuf>, opts: WalkOptions, apparent: bool) -> Result<(), String> {
+pub fn run(
+    path: Option<PathBuf>,
+    opts: WalkOptions,
+    apparent: bool,
+    check_update: bool,
+) -> Result<(), String> {
     let mut app = App::new(PathBuf::from("."), apparent);
     match path {
         Some(p) => app.pending_scan = Some(p),
         None => app.open_picker(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
     }
 
+    let update_rx = if check_update {
+        Some(crate::update::spawn_check())
+    } else {
+        None
+    };
+
     term::set_color_depth(term::detect_color_depth());
     let term = Term::enter().map_err(|e| format!("cannot enter raw mode: {e}"))?;
-    let result = event_loop(&term, &mut app, opts);
+    let result = event_loop(&term, &mut app, opts, update_rx);
     drop(term);
-    result
+    result?;
+    if let Some((tag, asset)) = app.pending_apply.take() {
+        eprintln!("rings: updating to {tag}…");
+        crate::update::apply_and_reexec(&tag, asset)?;
+    }
+    Ok(())
 }
 
-fn event_loop(term: &Term, app: &mut App, opts: WalkOptions) -> Result<(), String> {
+fn event_loop(
+    term: &Term,
+    app: &mut App,
+    opts: WalkOptions,
+    update_rx: Option<mpsc::Receiver<crate::update::UpdateOffer>>,
+) -> Result<(), String> {
     let mut prev: Option<Buffer> = None;
     let mut hits = HitMap::empty();
     let mut dirty = true;
@@ -42,6 +63,10 @@ fn event_loop(term: &Term, app: &mut App, opts: WalkOptions) -> Result<(), Strin
         if let Some(path) = app.pending_scan.take() {
             rx = Some(spawn_scan(path.clone(), opts.clone()));
             app.begin_scan(path);
+            dirty = true;
+        }
+        if let Some(Ok(offer)) = update_rx.as_ref().map(|r| r.try_recv()) {
+            app.offer_update(offer);
             dirty = true;
         }
         while let Some(Ok(ev)) = rx.as_ref().map(|r| r.try_recv()) {
@@ -102,17 +127,18 @@ fn event_loop(term: &Term, app: &mut App, opts: WalkOptions) -> Result<(), Strin
                 dirty = true;
             }
         }
-        if matches!(app.view, View::Scanning) {
-            dirty = true; // keep the spinner alive
+        if matches!(app.view, View::Scanning | View::Settings) {
+            dirty = true; // spinner, and the wordmark glint
         }
     }
 }
 
-/// Keys every list view shares: quit, help, and cursor movement.
+/// Keys every list view shares: quit, help, settings, and cursor movement.
 fn handle_common_key(app: &mut App, key: Key) -> bool {
     match key {
         Key::Char('q') => app.quit = true,
         Key::Char('?') | Key::F1 => app.open_help(),
+        Key::Char('m') | Key::Char('M') => app.open_settings(),
         Key::Char('j') | Key::Down => app.move_sel(1),
         Key::Char('k') | Key::Up => app.move_sel(-1),
         Key::PageDown => app.move_sel(10),
@@ -146,6 +172,15 @@ fn handle_key(app: &mut App, key: Key) {
         return;
     }
 
+    if app.update_popup {
+        match key {
+            Key::CtrlU | Key::Enter => app.accept_update(),
+            Key::Esc | Key::Char('q') | Key::Char('n') => app.dismiss_update(),
+            _ => {}
+        }
+        return;
+    }
+
     if matches!(app.view, View::Settings) {
         if app.settings_edit.is_some() {
             match key {
@@ -160,7 +195,7 @@ fn handle_key(app: &mut App, key: Key) {
             }
         } else {
             match key {
-                Key::Char('M') | Key::Char('q') | Key::Esc => app.close_settings(),
+                Key::Char('m') | Key::Char('M') | Key::Char('q') | Key::Esc => app.close_settings(),
                 Key::Char('j') | Key::Down => app.settings_move(1),
                 Key::Char('k') | Key::Up => app.settings_move(-1),
                 Key::Char('h') | Key::Left => app.settings_cycle_theme(-1),
@@ -199,7 +234,6 @@ fn handle_key(app: &mut App, key: Key) {
     }
 
     match key {
-        Key::Char('M') => app.open_settings(),
         Key::Enter => app.drill(),
         Key::Backspace | Key::Left | Key::Char('h') => go_back(app),
         Key::Char(' ') | Key::Char('d') => app.toggle_mark_selected(),
@@ -364,6 +398,8 @@ fn do_action(app: &mut App, action: Action) {
         Action::Scan => app.scan_picked(),
         Action::Picker => app.open_picker_from_scan(),
         Action::BackToScan => app.resume_scan(),
+        Action::ApplyUpdate => app.accept_update(),
+        Action::DismissUpdate => app.dismiss_update(),
     }
 }
 
@@ -1593,14 +1629,18 @@ mod tests {
     fn m_opens_a_settings_overlay_that_blocks_click_through() {
         let mut app = App::new(std::path::PathBuf::from("."), false);
         app.view = View::Browse;
-        handle_key(&mut app, Key::Char('M'));
+        handle_key(&mut app, Key::Char('m'));
         assert_eq!(app.view, View::Settings);
 
         let th = theme::current();
         let mut buf = Buffer::new(90, 28, th.bg);
         let hits = draw::draw(&mut buf, &app);
         let screen = buf.text();
-        assert!(screen.contains("Menu · settings"), "{screen}");
+        assert!(
+            screen.contains(crate::logo::WORDMARK[0].trim_end()),
+            "DCP-1 wordmark:\n{screen}"
+        );
+        assert!(screen.contains("Theme"), "{screen}");
         assert!(screen.contains("CSV export folder"), "{screen}");
         assert!(hits.buttons.is_empty(), "the modal blocks hidden controls");
 
@@ -1609,7 +1649,145 @@ mod tests {
         assert!(app.settings_edit.is_some());
         handle_key(&mut app, Key::Esc);
         assert!(app.settings_edit.is_none());
-        handle_key(&mut app, Key::Char('M'));
+        handle_key(&mut app, Key::Char('m'));
         assert_eq!(app.view, View::Browse);
+    }
+
+    #[test]
+    fn m_opens_settings_from_the_picker_and_shift_m_does_too() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.open_picker(tmp.path());
+        assert_eq!(app.view, View::Picker);
+
+        handle_key(&mut app, Key::Char('m'));
+        assert_eq!(app.view, View::Settings, "plain m opens settings");
+        handle_key(&mut app, Key::Esc);
+        assert_eq!(app.view, View::Picker, "Esc returns to the picker");
+
+        handle_key(&mut app, Key::Char('M'));
+        assert_eq!(app.view, View::Settings, "Shift+M still opens settings");
+        handle_key(&mut app, Key::Char('M'));
+        assert_eq!(app.view, View::Picker);
+    }
+
+    #[test]
+    fn settings_wordmark_fits_eighty_by_twenty_four_and_yields_when_tiny() {
+        let mut app = App::new(std::path::PathBuf::from("."), false);
+        app.view = View::Settings;
+        let th = theme::current();
+
+        let mut buf = Buffer::new(80, 24, th.bg);
+        draw::draw(&mut buf, &app);
+        let screen = buf.text();
+        assert!(
+            screen.contains(crate::logo::WORDMARK[3].trim_end()),
+            "80×24 keeps the wordmark:\n{screen}"
+        );
+        assert!(screen.contains("Theme"), "{screen}");
+        assert!(screen.contains("CSV export folder"), "{screen}");
+
+        let mut buf = Buffer::new(50, 16, th.bg);
+        draw::draw(&mut buf, &app);
+        let screen = buf.text();
+        assert!(
+            !screen.contains('█'),
+            "a short panel drops the wordmark:\n{screen}"
+        );
+        assert!(screen.contains("settings"), "{screen}");
+        assert!(screen.contains("Theme"), "{screen}");
+    }
+
+    fn sample_update_offer(writable: bool) -> crate::update::UpdateOffer {
+        crate::update::UpdateOffer {
+            tag: "v9.9.9".into(),
+            version: "9.9.9".into(),
+            asset: "rings-x86_64-apple-darwin.xz",
+            writable,
+        }
+    }
+
+    #[test]
+    fn update_popup_offers_ctrl_u_and_esc_dismisses() {
+        let mut app = App::new(std::path::PathBuf::from("."), false);
+        app.view = View::Browse;
+        app.offer_update(sample_update_offer(true));
+        assert!(app.update_popup);
+
+        let th = theme::current();
+        let mut buf = Buffer::new(80, 24, th.bg);
+        let hits = draw::draw(&mut buf, &app);
+        let screen = buf.text();
+        assert!(screen.contains("rings 9.9.9 is out"), "{screen}");
+        assert!(screen.contains("Ctrl+U"), "{screen}");
+        assert!(screen.contains("update and restart"), "{screen}");
+        assert!(
+            hits.buttons.iter().any(|(_, a)| *a == Action::ApplyUpdate),
+            "Update chip: {hits_actions:?}",
+            hits_actions = hits.buttons.iter().map(|(_, a)| *a).collect::<Vec<_>>()
+        );
+        assert!(hits
+            .buttons
+            .iter()
+            .any(|(_, a)| *a == Action::DismissUpdate));
+
+        handle_key(&mut app, Key::Esc);
+        assert!(!app.update_popup);
+        assert!(app.pending_apply.is_none());
+        assert!(app.update_offer.is_none());
+    }
+
+    #[test]
+    fn ctrl_u_queues_an_update_and_leaves_the_tui() {
+        let mut app = App::new(std::path::PathBuf::from("."), false);
+        app.view = View::Browse;
+        app.offer_update(sample_update_offer(true));
+        handle_key(&mut app, Key::CtrlU);
+        assert!(app.quit, "leave raw mode so the binary can be replaced");
+        assert_eq!(
+            app.pending_apply.as_ref().map(|(t, a)| (t.as_str(), *a)),
+            Some(("v9.9.9", "rings-x86_64-apple-darwin.xz"))
+        );
+        assert!(!app.update_popup);
+    }
+
+    #[test]
+    fn unwritable_update_shows_the_installer_and_ctrl_u_does_not_replace() {
+        let mut app = App::new(std::path::PathBuf::from("."), false);
+        app.view = View::Browse;
+        app.offer_update(sample_update_offer(false));
+
+        let th = theme::current();
+        let mut buf = Buffer::new(80, 24, th.bg);
+        let hits = draw::draw(&mut buf, &app);
+        let screen = buf.text();
+        assert!(screen.contains("not writable"), "{screen}");
+        assert!(
+            !hits.buttons.iter().any(|(_, a)| *a == Action::ApplyUpdate),
+            "no Update chip when the binary cannot be replaced"
+        );
+
+        handle_key(&mut app, Key::CtrlU);
+        assert!(!app.quit);
+        assert!(app.pending_apply.is_none());
+        assert!(app.status.contains("not writable"));
+    }
+
+    #[test]
+    fn clicking_update_queues_the_same_apply_as_ctrl_u() {
+        let mut app = App::new(std::path::PathBuf::from("."), false);
+        app.view = View::Browse;
+        app.offer_update(sample_update_offer(true));
+        let th = theme::current();
+        let mut buf = Buffer::new(80, 24, th.bg);
+        let hits = draw::draw(&mut buf, &app);
+        let update = hits
+            .buttons
+            .iter()
+            .find(|(_, a)| *a == Action::ApplyUpdate)
+            .expect("Update chip");
+        handle_click(&mut app, &hits, update.0.x, update.0.y);
+        assert!(app.pending_apply.is_some());
+        assert!(app.quit);
     }
 }

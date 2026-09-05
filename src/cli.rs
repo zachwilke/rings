@@ -37,7 +37,7 @@ pub const KEY_GROUPS: &[KeyGroup] = &[
             ("L", "sunburst / icicle"),
             ("c", "delete collector"),
             ("e", "export view to CSV"),
-            ("M", "settings menu"),
+            ("m", "settings menu"),
             ("?  F1", "this help"),
             ("q", "quit"),
         ],
@@ -114,9 +114,10 @@ When stdout is not a terminal (piped or redirected), rings prints the
 plain table instead of opening the TUI. --csv, --json, and --plain
 never enter the TUI, even in a terminal.
 
-An interactive TUI launch checks GitHub Releases for a newer rings and
-offers to install it. --offline or RINGS_NO_UPDATE=1 skips the check.
-Pipes, --plain, --json, --csv, --help, and --version never check.
+An interactive TUI launch checks GitHub Releases in the background. If a
+newer rings is out, a popup offers Ctrl+U to install and restart.
+--offline or RINGS_NO_UPDATE=1 skips the check. Pipes, --plain, --json,
+--csv, --help, and --version never check.
 
 rings recognises PostgreSQL clusters, MySQL/MariaDB data directories,
 SQL Server files, and SQLite databases while it walks, and reports what

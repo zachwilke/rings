@@ -145,9 +145,9 @@ From a finished scan, `-` (or the **Picker** button) reopens the picker at the d
 
 When stdout is not a terminal (a pipe or redirect), rings prints the plain table automatically — no TUI, no spinner. `--plain` / `--no-tui`, `--csv`, and `--json` never enter the TUI, even in a terminal.
 
-On an interactive TUI launch, rings asks GitHub Releases whether a newer version is out (about two seconds, then gives up) and offers to install it in place. `--plain`, `--json`, `--csv`, pipes, `--help`, and `--version` never check and never prompt. Skip with `--offline` or `RINGS_NO_UPDATE=1`. The check uses `curl` or `wget` (PowerShell / `curl.exe` on Windows) — no extra libraries. If the install path is not writable, rings prints the installer one-liner instead of sudoing.
+On an interactive TUI launch, rings checks GitHub Releases in the background. If a newer version is out, a popup offers **Ctrl+U** to install in place and restart. `--plain`, `--json`, `--csv`, pipes, `--help`, and `--version` never check. Skip with `--offline` or `RINGS_NO_UPDATE=1`. The check uses `curl` or `wget` (PowerShell / `curl.exe` on Windows) — no extra libraries. If the install path is not writable, the popup shows the installer one-liner instead of sudoing.
 
-rings stays on one filesystem (`--all-filesystems` to cross), skips Linux virtual mounts (`/proc` `/sys` `/dev` `/run`; `/dev` on macOS), never follows symlinked directories, counts hard-linked inodes once, and counts permission errors instead of crashing. Without root it scans what it can read and reminds you `sudo rings /` (or Administrator on Windows) sees everything.
+rings stays on one filesystem (`--all-filesystems` to cross). Linux skips `/proc` `/sys` `/dev` `/run` `/snap`. macOS skips APFS system volumes (Preboot, VM, Update, …) and does not walk `/System/Volumes/Data` a second time when you scan `/` — firmlinks already show that tree as `/Users`, `/Applications`, `/Library`. Windows skips `System Volume Information` and does not follow NTFS junctions (so `Documents and Settings` cannot double-count `Users`); the Recycle Bin is scanned and tagged as temp. Never follows symlinked directories, counts hard-linked inodes once, and counts permission errors instead of crashing. Without root it scans what it can read and reminds you `sudo rings /` (or Administrator on Windows) sees everything.
 
 Press `?` or `F1` in the TUI for the full key list (the footer always hints `? help`). `rings help` and `rings --help` print the same list.
 
@@ -157,7 +157,7 @@ Press `?` or `F1` in the TUI for the full key list (the footer always hints `? h
 | Enter — drill in | double-click — drill in |
 | `h` / Backspace — go up · `-` — picker | right-click — context menu |
 | Space — mark for delete · `f` — temp & cache · `c` — collector | click the footer buttons |
-| `x` — confirm delete · `e` — export CSV · `M` — settings · `?` `F1` — help · `q` — quit | click a breadcrumb — jump |
+| `x` — confirm delete · `e` — export CSV · `m` — settings · `?` `F1` — help · `q` — quit | click a breadcrumb — jump |
 
 In the picker: `j` `k` move, `Enter` opens a directory, `h` goes up, `s` scans the highlighted one, `Esc` goes back to the scan you came from.
 
@@ -167,7 +167,7 @@ Hovering highlights rows, slices, and buttons; hovering a slice shows its path, 
 
 `--theme nord` (also `gruvbox`, `dracula`, `solarized-dark`, `mono`; default `rings`). Color depth follows the terminal: 24-bit where `COLORTERM`, `TERM_PROGRAM`, or `WT_SESSION` say so, 256 colors for other xterm-alikes, 16 for the Linux console. `NO_COLOR` turns color off (bold and reverse video only); `RINGS_COLORS=16|256|truecolor` overrides detection.
 
-Press `M` for the persistent settings menu. It previews every built-in theme and
+Press `m` for the persistent settings menu. It previews every built-in theme and
 sets the folder used by interactive CSV exports. Settings live in
 `$XDG_CONFIG_HOME/rings/config` (or `~/.config/rings/config`); an explicit
 `--theme` still overrides the saved theme for that launch.

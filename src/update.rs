@@ -1,6 +1,8 @@
-//! Launch-time GitHub Release check and optional self-update.
+//! GitHub Release check and optional self-update.
 //!
-//! No HTTP crate: the check shells out to curl/wget (Unix) or curl.exe /
+//! The TUI starts immediately; a background thread probes GitHub and the
+//! UI pops a modal if a newer tag exists. Ctrl+U downloads, replaces this
+//! binary, and re-execs. No HTTP crate: curl/wget (Unix) or curl.exe /
 //! PowerShell (Windows). Failures stay silent so a down GitHub never
 //! blocks a disk scan. Asset names stay in lockstep with `rings_asset()`
 //! in install.sh — see the table on `asset_for_uname`.
@@ -12,7 +14,6 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use crate::cli::Cli;
-use crate::sys;
 
 /// GitHub repo that publishes rings binaries.
 pub const REPO: &str = "zachwilke/rings";
@@ -161,6 +162,30 @@ pub fn current_release_asset() -> Option<&'static str> {
     }
 }
 
+/// A newer GitHub Release the TUI can offer to install.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UpdateOffer {
+    /// Tag as published, e.g. `v0.4.0`.
+    pub tag: String,
+    /// Tag without a leading `v`, for the popup.
+    pub version: String,
+    pub asset: &'static str,
+    /// Whether the running binary's directory can be replaced in place.
+    pub writable: bool,
+}
+
+pub fn running_version() -> &'static str {
+    CURRENT_VERSION
+}
+
+pub fn installer_hint() -> &'static str {
+    if cfg!(windows) {
+        "irm https://raw.githubusercontent.com/zachwilke/rings/main/install.ps1 | iex"
+    } else {
+        "curl -fsSL https://raw.githubusercontent.com/zachwilke/rings/main/install.sh | sh"
+    }
+}
+
 /// Interactive TUI launch only. Scripting flags, pipes, help, version, and
 /// the skip switches never check.
 pub fn should_check_update(cli: &Cli, stdout_is_tty: bool, env_skip: bool) -> bool {
@@ -185,58 +210,51 @@ fn download_url(tag: &str, asset: &str) -> String {
     format!("https://github.com/{REPO}/releases/download/{tag}/{asset}")
 }
 
-fn installer_hint() -> &'static str {
-    if cfg!(windows) {
-        "irm https://raw.githubusercontent.com/zachwilke/rings/main/install.ps1 | iex"
-    } else {
-        "curl -fsSL https://raw.githubusercontent.com/zachwilke/rings/main/install.sh | sh"
-    }
+/// Probe GitHub on a background thread. The receiver yields at most one
+/// [`UpdateOffer`]; a down network, unknown arch, or current version is
+/// silence, never an error.
+pub fn spawn_check() -> std::sync::mpsc::Receiver<UpdateOffer> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        if let Some(offer) = probe_update() {
+            let _ = tx.send(offer);
+        }
+    });
+    rx
 }
 
-/// Probe GitHub, offer once, maybe replace this binary. Never returns an
-/// error to the caller — a failed check is silent; a failed apply prints
-/// a short line and the scan continues.
-pub fn maybe_offer_and_apply(cli: &Cli) {
-    if !should_check_update(cli, sys::stdout_is_tty(), env_skips_update()) {
-        return;
-    }
-    if !sys::stdin_is_tty() {
-        return;
-    }
-    let Some(asset) = current_release_asset() else {
-        return;
-    };
-    let Some(json) = fetch_latest_json() else {
-        return;
-    };
-    let Some(tag) = scrape_tag_name(&json) else {
-        return;
-    };
+fn probe_update() -> Option<UpdateOffer> {
+    let asset = current_release_asset()?;
+    let json = fetch_latest_json()?;
+    let tag = scrape_tag_name(&json)?;
     if !tag_is_safe(tag) {
-        return;
+        return None;
     }
     if !latest_is_newer(tag, CURRENT_VERSION).unwrap_or(false) {
-        return;
+        return None;
     }
-    let shown = tag.strip_prefix('v').unwrap_or(tag);
-    if !prompt_wants_update(shown, CURRENT_VERSION) {
-        return;
-    }
-    if let Err(e) = apply_update(tag, asset) {
-        match e {
-            ApplyError::NotWritable(path) => {
-                eprintln!(
-                    "rings: {} is not writable — cannot self-update (no sudo).",
-                    path.display()
-                );
-                eprintln!("install the latest with:");
-                eprintln!("  {}", installer_hint());
-            }
-            ApplyError::Msg(msg) => {
-                eprintln!("rings: update failed: {msg}");
-            }
-        }
-    }
+    let writable = current_exe_path()
+        .ok()
+        .and_then(|exe| exe.parent().map(dir_is_writable))
+        .unwrap_or(false);
+    Some(UpdateOffer {
+        tag: tag.to_string(),
+        version: tag.strip_prefix('v').unwrap_or(tag).to_string(),
+        asset,
+        writable,
+    })
+}
+
+/// Download, replace this binary, and re-exec. Does not return on success.
+pub fn apply_and_reexec(tag: &str, asset: &str) -> Result<(), String> {
+    apply_update(tag, asset).map_err(|e| match e {
+        ApplyError::NotWritable(path) => format!(
+            "{} is not writable — cannot self-update (no sudo).\ninstall the latest with:\n  {}",
+            path.display(),
+            installer_hint()
+        ),
+        ApplyError::Msg(msg) => msg,
+    })
 }
 
 enum ApplyError {
@@ -636,104 +654,6 @@ fn command_ok(name: &str) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
-}
-
-fn prompt_wants_update(latest: &str, current: &str) -> bool {
-    eprint!("rings {latest} is out (you have {current}). Update now? [y/N] ");
-    let _ = io::stderr().flush();
-    let yes = read_prompt_yes();
-    if yes {
-        let _ = writeln!(io::stderr(), "y");
-    } else {
-        let _ = writeln!(io::stderr());
-    }
-    yes
-}
-
-/// One key if the TTY allows it; otherwise a line. Enter / q / Ctrl-C = no.
-fn read_prompt_yes() -> bool {
-    #[cfg(unix)]
-    {
-        if let Some(b) = read_unix_key() {
-            return matches!(b, b'y' | b'Y');
-        }
-    }
-    #[cfg(windows)]
-    {
-        if let Some(b) = read_windows_key() {
-            return matches!(b, b'y' | b'Y');
-        }
-    }
-    read_line_yes()
-}
-
-fn read_line_yes() -> bool {
-    let mut line = String::new();
-    if io::stdin().read_line(&mut line).is_err() {
-        return false;
-    }
-    matches!(line.trim(), "y" | "Y" | "yes" | "Yes" | "YES")
-}
-
-#[cfg(unix)]
-fn read_unix_key() -> Option<u8> {
-    unsafe {
-        let mut orig = std::mem::MaybeUninit::<libc::termios>::uninit();
-        if libc::tcgetattr(libc::STDIN_FILENO, orig.as_mut_ptr()) != 0 {
-            return None;
-        }
-        let orig = orig.assume_init();
-        let mut raw = orig;
-        raw.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG);
-        raw.c_cc[libc::VMIN] = 1;
-        raw.c_cc[libc::VTIME] = 0;
-        if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &raw) != 0 {
-            return None;
-        }
-        let mut buf = [0u8; 1];
-        let n = libc::read(libc::STDIN_FILENO, buf.as_mut_ptr() as *mut _, 1);
-        libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &orig);
-        if n <= 0 {
-            return Some(0);
-        }
-        Some(buf[0])
-    }
-}
-
-#[cfg(windows)]
-fn read_windows_key() -> Option<u8> {
-    unsafe {
-        let hin = crate::sys::win32::GetStdHandle(crate::sys::win32::STD_INPUT_HANDLE);
-        if hin.is_null() || hin == crate::sys::win32::INVALID_HANDLE_VALUE {
-            return None;
-        }
-        let mut mode = 0u32;
-        if crate::sys::win32::GetConsoleMode(hin, &mut mode) == 0 {
-            return None;
-        }
-        // No line / echo / processed — Ctrl-C arrives as 0x03, not a signal.
-        let raw = mode
-            & !crate::sys::win32::ENABLE_LINE_INPUT
-            & !crate::sys::win32::ENABLE_ECHO_INPUT
-            & !crate::sys::win32::ENABLE_PROCESSED_INPUT;
-        if crate::sys::win32::SetConsoleMode(hin, raw) == 0 {
-            return None;
-        }
-        let mut buf = [0u8; 1];
-        let mut read = 0u32;
-        let ok = crate::sys::win32::ReadFile(
-            hin,
-            buf.as_mut_ptr() as *mut _,
-            1,
-            &mut read,
-            std::ptr::null_mut(),
-        ) != 0;
-        let _ = crate::sys::win32::SetConsoleMode(hin, mode);
-        if !ok || read == 0 {
-            return Some(0);
-        }
-        Some(buf[0])
-    }
 }
 
 #[cfg(test)]

@@ -150,11 +150,15 @@ fn decode_records(recs: &[win32::InputRecord]) -> Vec<Event> {
                 if !down {
                     continue;
                 }
-                if (ctrl & (win32::LEFT_CTRL_PRESSED | win32::RIGHT_CTRL_PRESSED)) != 0
-                    && vk == win32::VK_C
-                {
-                    events.push(Event::Key(Key::Char('q')));
-                    continue;
+                if (ctrl & (win32::LEFT_CTRL_PRESSED | win32::RIGHT_CTRL_PRESSED)) != 0 {
+                    if vk == win32::VK_C {
+                        events.push(Event::Key(Key::Char('q')));
+                        continue;
+                    }
+                    if vk == win32::VK_U {
+                        events.push(Event::Key(Key::CtrlU));
+                        continue;
+                    }
                 }
                 if let Some(key) = map_vk(vk, uchar) {
                     events.push(Event::Key(key));

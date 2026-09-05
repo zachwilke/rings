@@ -12,10 +12,36 @@ pub const EXPORT_FILE_MIN_BYTES: u64 = 1_048_576;
 pub const PROGRESS_EVERY_ENTRIES: u64 = 256;
 
 /// Virtual / unusable paths never descended into, even on an explicit root scan.
-/// Linux-only mounts (`/proc` `/sys` `/run`) are listed on all Unix: they are
-/// a no-op on macOS where those directories do not exist. `/dev` is skipped
-/// on both Linux and macOS.
-#[cfg(unix)]
+/// `/proc` `/sys` `/run` are listed on all Unix: they are a no-op on macOS
+/// where those directories do not exist. `/dev` is skipped on both.
+#[cfg(target_os = "linux")]
+pub const SPECIAL_SKIP_PATHS: &[&str] = &["/proc", "/sys", "/dev", "/run", "/snap"];
+
+/// APFS system volumes that are not the user's data. `/System/Volumes/Data`
+/// is *not* here: it is the data volume, skipped only as a firmlink alias
+/// when the scan already covers it through `/Users`, `/Applications`, …
+/// See `scan::skip::is_apfs_data_alias`.
+#[cfg(target_os = "macos")]
+pub const SPECIAL_SKIP_PATHS: &[&str] = &[
+    "/proc",
+    "/sys",
+    "/dev",
+    "/run",
+    "/System/Volumes/Preboot",
+    "/System/Volumes/Update",
+    "/System/Volumes/VM",
+    "/System/Volumes/xarts",
+    "/System/Volumes/iSCPreboot",
+    "/System/Volumes/Hardware",
+    "/System/Volumes/Recovery",
+    "/System/Volumes/BaseSystem",
+    "/System/Volumes/FieldService",
+    "/System/Volumes/FieldServiceDiagnostic",
+    "/System/Volumes/FieldServiceRepair",
+    "/System/Volumes/Data/home",
+];
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
 pub const SPECIAL_SKIP_PATHS: &[&str] = &["/proc", "/sys", "/dev", "/run"];
 
 /// Exact paths that must never be deleted.
@@ -46,12 +72,14 @@ pub const SAFEGUARD_PREFIXES: &[&str] = &[
     "/lib64/",
     "/System/",
     "/private/etc/",
+    "/private/var/db/",
+    "/private/var/vm/",
 ];
 
 /// Windows component names (matched case-insensitively) that must not be walked.
+/// `$Recycle.Bin` is *not* skipped — it is real reclaimable space, tagged Temp.
 #[cfg(windows)]
-pub const SPECIAL_SKIP_COMPONENTS: &[&str] =
-    &["$Recycle.Bin", "System Volume Information", "Recovery"];
+pub const SPECIAL_SKIP_COMPONENTS: &[&str] = &["System Volume Information", "Recovery"];
 
 #[cfg(windows)]
 pub const SPECIAL_SKIP_FILES: &[&str] = &["pagefile.sys", "hiberfil.sys", "swapfile.sys"];

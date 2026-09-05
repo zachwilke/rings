@@ -45,6 +45,9 @@ pub enum Action {
     Picker,
     /// Return to the scan the picker was opened from.
     BackToScan,
+    /// Install the offered GitHub Release and re-exec.
+    ApplyUpdate,
+    DismissUpdate,
 }
 
 /// How the browse view draws the tree. Both layouts consume the same
@@ -185,6 +188,10 @@ pub struct App {
     pub settings: Settings,
     pub settings_selected: usize,
     pub settings_edit: Option<String>,
+    pub update_offer: Option<crate::update::UpdateOffer>,
+    pub update_popup: bool,
+    /// After leaving raw mode, download this tag and re-exec.
+    pub pending_apply: Option<(String, &'static str)>,
 }
 
 impl App {
@@ -217,6 +224,9 @@ impl App {
             settings: Settings::load(),
             settings_selected: 0,
             settings_edit: None,
+            update_offer: None,
+            update_popup: false,
+            pending_apply: None,
         }
     }
 
@@ -543,6 +553,30 @@ impl App {
     pub fn close_settings(&mut self) {
         self.settings_edit = None;
         self.view = self.previous_view.clone();
+    }
+
+    pub fn offer_update(&mut self, offer: crate::update::UpdateOffer) {
+        self.update_offer = Some(offer);
+        self.update_popup = true;
+    }
+
+    pub fn dismiss_update(&mut self) {
+        self.update_popup = false;
+        self.update_offer = None;
+    }
+
+    pub fn accept_update(&mut self) {
+        let Some(offer) = self.update_offer.as_ref() else {
+            return;
+        };
+        if offer.writable {
+            self.pending_apply = Some((offer.tag.clone(), offer.asset));
+            self.update_popup = false;
+            self.quit = true;
+        } else {
+            self.status = format!("not writable — {}", crate::update::installer_hint());
+            self.update_popup = false;
+        }
     }
 
     pub fn settings_move(&mut self, delta: isize) {

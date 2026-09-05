@@ -27,6 +27,41 @@ pub fn size() -> (u16, u16) {
     (w, h)
 }
 
+/// Delta Corps Priest 1 wordmark — the Omarchy screensaver font, five
+/// letters, one column per terminal cell. Settings is the about-screen
+/// moment; the compact sunburst above stays the in-app mark.
+pub const WORDMARK: &[&str] = &[
+    "   ▄████████  ▄█  ███▄▄▄▄      ▄██████▄     ▄████████ ",
+    "  ███    ███ ███  ███▀▀▀██▄   ███    ███   ███    ███ ",
+    "  ███    ███ ███▌ ███   ███   ███    █▀    ███    █▀  ",
+    " ▄███▄▄▄▄██▀ ███▌ ███   ███  ▄███          ███        ",
+    "▀▀███▀▀▀▀▀   ███▌ ███   ███ ▀▀███ ████▄  ▀███████████ ",
+    "▀███████████ ███  ███   ███   ███    ███          ███ ",
+    "  ███    ███ ███  ███   ███   ███    ███    ▄█    ███ ",
+    "  ███    ███ █▀    ▀█   █▀    ████████▀   ▄████████▀  ",
+];
+
+/// Column ranges of R, I, N, G, S inside [`WORDMARK`], so each letter
+/// can take a ring of the palette.
+pub const WORDMARK_LETTERS: &[(usize, usize)] = &[(0, 13), (13, 18), (18, 28), (28, 41), (41, 54)];
+
+pub fn wordmark_size() -> (u16, u16) {
+    let mut w = 0u16;
+    for line in WORDMARK {
+        w = w.max(line.chars().count() as u16);
+    }
+    (w, WORDMARK.len() as u16)
+}
+
+pub fn wordmark_letter(col: usize) -> usize {
+    for (i, (start, end)) in WORDMARK_LETTERS.iter().enumerate() {
+        if col >= *start && col < *end {
+            return i;
+        }
+    }
+    WORDMARK_LETTERS.len().saturating_sub(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -44,6 +79,30 @@ mod tests {
             first.starts_with("       ╲"),
             "first line must keep its indent (no `\\` skip): {first:?}"
         );
+    }
+
+    #[test]
+    fn wordmark_is_rings_in_block_caps() {
+        let (w, h) = wordmark_size();
+        assert_eq!(h, 8, "eight rows, matching I/N/G/S");
+        assert!(
+            (50..=56).contains(&w),
+            "five DCP-1 letters fit an 80-col modal, got {w}"
+        );
+        assert_eq!(WORDMARK_LETTERS.len(), 5);
+        let joined: String = WORDMARK.join("\n");
+        assert!(joined.contains('█') && joined.contains('▄') && joined.contains('▀'));
+        assert_eq!(wordmark_letter(0), 0, "R");
+        assert_eq!(wordmark_letter(13), 1, "I");
+        assert_eq!(wordmark_letter(20), 2, "N");
+        assert_eq!(wordmark_letter(30), 3, "G");
+        assert_eq!(wordmark_letter(50), 4, "S");
+        for line in WORDMARK {
+            assert!(
+                line.chars().count() as u16 <= w,
+                "ragged line wider than size(): {line:?}"
+            );
+        }
     }
 
     #[test]

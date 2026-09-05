@@ -60,17 +60,39 @@ pub fn is_other_filesystem(one_file_system: bool, root_dev: u64, entry_dev: u64)
 
 pub fn skip_reason(
     path: &Path,
+    scan_root: &Path,
     one_file_system: bool,
     root_dev: u64,
     entry_dev: u64,
 ) -> Option<SkipReason> {
-    if is_special_path(path) {
+    if is_special_path(path) || is_apfs_data_alias(path, scan_root) {
         return Some(SkipReason::Special);
     }
     if is_other_filesystem(one_file_system, root_dev, entry_dev) {
         return Some(SkipReason::OtherFilesystem);
     }
     None
+}
+
+/// `/System/Volumes/Data` is the APFS data volume. On a scan of `/` it is
+/// already visible through firmlinks (`/Users`, `/Applications`, `/Library`,
+/// `/private`, …). Walking both copies every file. Skip the alias unless
+/// Data itself (or a path under it) is the scan root.
+pub fn is_apfs_data_alias(path: &Path, scan_root: &Path) -> bool {
+    let path = unix_abs(path);
+    if path != "/System/Volumes/Data" {
+        return false;
+    }
+    let root = unix_abs(scan_root);
+    root != "/System/Volumes/Data" && !root.starts_with("/System/Volumes/Data/")
+}
+
+fn unix_abs(path: &Path) -> String {
+    let mut s = path.to_string_lossy().replace('\\', "/");
+    if s.len() > 1 && s.ends_with('/') {
+        s.pop();
+    }
+    s
 }
 
 #[cfg(test)]
@@ -94,13 +116,59 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn special_paths_match_windows_junk() {
-        assert!(is_special_path(Path::new(r"C:\$Recycle.Bin")));
-        assert!(is_special_path(Path::new(r"C:\$Recycle.Bin\S-1-5-18")));
+        assert!(
+            !is_special_path(Path::new(r"C:\$Recycle.Bin")),
+            "recycle bin is reclaimable space, not a virtual mount"
+        );
         assert!(is_special_path(Path::new(r"D:\System Volume Information")));
         assert!(is_special_path(Path::new(r"C:\pagefile.sys")));
         assert!(is_special_path(Path::new(r"C:\hiberfil.sys")));
         assert!(!is_special_path(Path::new(r"C:\Users\zach")));
         assert!(!is_special_path(Path::new(r"C:\Temp")));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_skips_synthetic_volumes_not_the_data_volume() {
+        assert!(is_special_path(Path::new("/System/Volumes/Preboot")));
+        assert!(is_special_path(Path::new("/System/Volumes/VM")));
+        assert!(is_special_path(Path::new("/System/Volumes/Update")));
+        assert!(is_special_path(Path::new("/System/Volumes/Data/home")));
+        assert!(
+            !is_special_path(Path::new("/System/Volumes/Data")),
+            "Data is the user volume; only skip it as a firmlink alias"
+        );
+        assert!(is_apfs_data_alias(
+            Path::new("/System/Volumes/Data"),
+            Path::new("/")
+        ));
+        assert!(is_apfs_data_alias(
+            Path::new("/System/Volumes/Data"),
+            Path::new("/Users")
+        ));
+        assert!(
+            !is_apfs_data_alias(
+                Path::new("/System/Volumes/Data"),
+                Path::new("/System/Volumes/Data")
+            ),
+            "scanning Data itself must walk it"
+        );
+        assert!(!is_apfs_data_alias(
+            Path::new("/System/Volumes/Data"),
+            Path::new("/System/Volumes/Data/Users/zach")
+        ));
+        assert!(!is_apfs_data_alias(
+            Path::new("/Users/zach"),
+            Path::new("/")
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_skips_snap_mounts() {
+        assert!(is_special_path(Path::new("/snap")));
+        assert!(is_special_path(Path::new("/snap/firefox/current")));
+        assert!(!is_special_path(Path::new("/var/lib/snapd")));
     }
 
     #[test]
@@ -128,11 +196,17 @@ mod tests {
         );
         assert!(is_other_filesystem(true, tmp_dev, proc_dev));
         assert_eq!(
-            skip_reason(Path::new("/proc"), true, tmp_dev, proc_dev),
+            skip_reason(Path::new("/proc"), Path::new("/"), true, tmp_dev, proc_dev),
             Some(SkipReason::Special)
         );
         assert_eq!(
-            skip_reason(Path::new("/mnt/other"), true, tmp_dev, proc_dev),
+            skip_reason(
+                Path::new("/mnt/other"),
+                Path::new("/"),
+                true,
+                tmp_dev,
+                proc_dev
+            ),
             Some(SkipReason::OtherFilesystem)
         );
     }

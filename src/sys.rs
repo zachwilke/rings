@@ -102,6 +102,7 @@ pub(crate) mod win32 {
     pub const VK_DOWN: u16 = 0x28;
     pub const VK_F1: u16 = 0x70;
     pub const VK_C: u16 = 0x43;
+    pub const VK_U: u16 = 0x55;
 
     pub const FO_DELETE: u32 = 0x0003;
     pub const FOF_SILENT: u16 = 0x0004;
@@ -110,6 +111,7 @@ pub(crate) mod win32 {
     pub const FOF_NOERRORUI: u16 = 0x0400;
 
     pub const CP_UTF8: u32 = 65001;
+    pub const INVALID_FILE_SIZE: u32 = 0xFFFF_FFFF;
 
     #[repr(C)]
     #[derive(Clone, Copy)]
@@ -176,6 +178,8 @@ pub(crate) mod win32 {
             read: *mut u32,
             overlapped: *mut c_void,
         ) -> i32;
+        pub fn GetCompressedFileSizeW(path: *const u16, high: *mut u32) -> u32;
+        pub fn GetLastError() -> u32;
     }
 
     #[link(name = "shell32")]
@@ -267,17 +271,55 @@ pub fn meta_size(meta: &Metadata) -> u64 {
     meta.len()
 }
 
-/// Allocated bytes on Unix (`st_blocks * 512`); file size on Windows.
-pub fn meta_used(meta: &Metadata) -> u64 {
+/// Whether the walker should descend. Unix symlink-dirs already fail
+/// `is_dir()` after `symlink_metadata`. Windows junctions and mount-point
+/// reparse points report as directories and must be excluded or a scan of
+/// `C:\` walks `Documents and Settings` into `Users` and counts twice.
+pub fn is_walkable_dir(meta: &Metadata) -> bool {
+    if !meta.is_dir() {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return false;
+        }
+    }
+    true
+}
+
+/// Allocated bytes on Unix (`st_blocks * 512`). On Windows, the NTFS
+/// on-disk size (compressed / sparse / OneDrive placeholder), falling
+/// back to `len` when the handle cannot be queried.
+pub fn meta_used(path: &std::path::Path, meta: &Metadata) -> u64 {
     #[cfg(unix)]
     {
+        let _ = path;
         use std::os::unix::fs::MetadataExt;
         crate::size::used_from_blocks(meta.blocks())
     }
     #[cfg(windows)]
     {
-        meta.len()
+        windows_allocated(path).unwrap_or_else(|| meta.len())
     }
+}
+
+#[cfg(windows)]
+fn windows_allocated(path: &std::path::Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    wide.push(0);
+    let mut high = 0u32;
+    let low = unsafe { win32::GetCompressedFileSizeW(wide.as_ptr(), &mut high) };
+    if low == win32::INVALID_FILE_SIZE {
+        let err = unsafe { win32::GetLastError() };
+        if err != 0 {
+            return None;
+        }
+    }
+    Some(((high as u64) << 32) | (low as u64))
 }
 
 pub fn home_dir() -> Option<PathBuf> {
@@ -296,11 +338,11 @@ pub fn full_disk_hint() -> &'static str {
 
 pub fn scan_banner_privileged() -> &'static str {
     if cfg!(windows) {
-        "scanning as Administrator · other volumes skipped"
+        "scanning as Administrator · other volumes skipped · junctions not followed"
     } else if cfg!(target_os = "macos") {
-        "scanning as root · other filesystems skipped · /dev skipped"
+        "scanning as root · APFS firmlinks followed once · system volumes skipped"
     } else {
-        "scanning as root · other filesystems skipped · /proc /sys /dev /run skipped"
+        "scanning as root · other filesystems skipped · /proc /sys /dev /run /snap skipped"
     }
 }
 

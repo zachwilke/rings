@@ -48,15 +48,23 @@ impl std::fmt::Display for Category {
 }
 
 /// Longest-prefix first so `/var/log/journal` is a journal, not a log.
-/// macOS paths (`/private/tmp`, `Library/Caches`) sit alongside Linux ones.
+/// Rules are path-shaped, not host-shaped: a Windows tree mounted on Linux
+/// still tags `$Recycle.Bin`, and a Time Machine volume still tags Caches.
 const PREFIX_RULES: &[(&str, Category)] = &[
     ("/var/log/journal", Category::Journal),
     ("/run/log/journal", Category::Journal),
     ("/var/lib/systemd/coredump", Category::Crash),
     ("/var/lib/apport/coredump", Category::Crash),
+    ("/var/lib/apt/lists", Category::Cache),
+    ("/var/lib/snapd/cache", Category::Cache),
+    ("/var/lib/docker/tmp", Category::Temp),
+    ("/var/cache/snapd", Category::Cache),
     ("/var/crash", Category::Crash),
     ("/var/cache", Category::Cache),
+    ("/Library/Logs/DiagnosticReports", Category::Crash),
+    ("/Library/Logs/CrashReporter", Category::Crash),
     ("/private/var/log", Category::Log),
+    ("/private/var/vm", Category::Temp),
     ("/private/var/tmp", Category::Temp),
     ("/private/var/folders", Category::Temp),
     ("/private/tmp", Category::Temp),
@@ -80,10 +88,21 @@ pub fn classify(path: &Path) -> Category {
         }
     }
 
+    if macos_developer_cache(&normalized) {
+        return Category::Cache;
+    }
+    if has_component(&normalized, "DiagnosticReports")
+        || has_component(&normalized, "CrashReporter")
+    {
+        return Category::Crash;
+    }
     if has_component(&normalized, ".cache") || has_component(&normalized, "Caches") {
         return Category::Cache;
     }
     if has_component(&normalized, "Logs") && has_component(&normalized, "Library") {
+        return Category::Log;
+    }
+    if has_component(&normalized, "Logs") && has_component_ci(&normalized, "Windows") {
         return Category::Log;
     }
     if has_component(&normalized, "thumbnails") && has_component(&normalized, ".cache")
@@ -94,8 +113,17 @@ pub fn classify(path: &Path) -> Category {
     if normalized.contains("/.thumbnails/") || normalized.ends_with("/.thumbnails") {
         return Category::Cache;
     }
-    if has_component_ci(&normalized, "$Recycle.Bin") || has_component(&normalized, ".Trash") {
+    if is_trash(&normalized) {
         return Category::Temp;
+    }
+    if has_component(&normalized, ".TemporaryItems")
+        || has_component(&normalized, ".Spotlight-V100")
+    {
+        return if has_component(&normalized, ".Spotlight-V100") {
+            Category::Cache
+        } else {
+            Category::Temp
+        };
     }
     if has_component_ci(&normalized, "Temp")
         && (has_component_ci(&normalized, "AppData")
@@ -103,6 +131,12 @@ pub fn classify(path: &Path) -> Category {
             || has_component_ci(&normalized, "Local"))
     {
         return Category::Temp;
+    }
+    if windows_update_cache(&normalized) {
+        return Category::Cache;
+    }
+    if windows_crash(&normalized) {
+        return Category::Crash;
     }
 
     // Package-manager cache dirs that sometimes live outside /var/cache.
@@ -112,12 +146,59 @@ pub fn classify(path: &Path) -> Category {
     if ends_with_component(&normalized, "pacman") && normalized.contains("/cache") {
         return Category::Cache;
     }
+    if has_component(&normalized, ".local") && has_component(&normalized, "Trash") {
+        return Category::Temp;
+    }
 
     if looks_like_core_dump(&normalized) {
         return Category::Crash;
     }
 
     Category::Normal
+}
+
+/// Xcode, simulators, and device support — the usual 20–80 GB on a Mac
+/// that still looks like ordinary `Developer/` without these names.
+fn macos_developer_cache(path: &str) -> bool {
+    has_component(path, "DerivedData")
+        || has_component(path, "CoreSimulator")
+        || has_component(path, "iOS DeviceSupport")
+        || has_component(path, "DeveloperDiskImages")
+        || (has_component(path, "DocumentationCache") && has_component(path, "Developer"))
+}
+
+fn is_trash(path: &str) -> bool {
+    has_component_ci(path, "$Recycle.Bin")
+        || path
+            .split('/')
+            .any(|c| c == ".Trash" || c == ".Trashes" || c.starts_with(".Trash-"))
+}
+
+fn windows_update_cache(path: &str) -> bool {
+    if has_component_ci(path, "Windows.old")
+        || has_component_ci(path, "$Windows.~BT")
+        || has_component_ci(path, "$Windows.~WS")
+        || has_component_ci(path, "DeliveryOptimization")
+        || has_component_ci(path, "INetCache")
+        || has_component_ci(path, "Package Cache")
+    {
+        return true;
+    }
+    if has_component_ci(path, "Prefetch") && has_component_ci(path, "Windows") {
+        return true;
+    }
+    if has_component_ci(path, "SoftwareDistribution") && has_component_ci(path, "Download") {
+        return true;
+    }
+    false
+}
+
+fn windows_crash(path: &str) -> bool {
+    if has_component_ci(path, "Minidump") || has_component_ci(path, "CrashDumps") {
+        return true;
+    }
+    let name = path.rsplit('/').next().unwrap_or("");
+    name.eq_ignore_ascii_case("MEMORY.DMP")
 }
 
 fn normalize_path(raw: &str) -> String {
@@ -219,6 +300,132 @@ mod tests {
         assert_eq!(
             classify(Path::new(r"C:\$Recycle.Bin\S-1-5-18")),
             Category::Temp
+        );
+    }
+
+    #[test]
+    fn macos_developer_and_crash_paths() {
+        assert_eq!(
+            classify(Path::new(
+                "/Users/zach/Library/Developer/Xcode/DerivedData/rings-abc"
+            )),
+            Category::Cache
+        );
+        assert_eq!(
+            classify(Path::new(
+                "/Users/zach/Library/Developer/CoreSimulator/Devices"
+            )),
+            Category::Cache
+        );
+        assert_eq!(
+            classify(Path::new(
+                "/Users/zach/Library/Developer/Xcode/iOS DeviceSupport/18.0"
+            )),
+            Category::Cache
+        );
+        assert_eq!(
+            classify(Path::new(
+                "/Users/zach/Library/Logs/DiagnosticReports/rings.crash"
+            )),
+            Category::Crash
+        );
+        assert_eq!(
+            classify(Path::new("/private/var/vm/sleepimage")),
+            Category::Temp
+        );
+        assert_eq!(
+            classify(Path::new("/Volumes/SSD/.Trashes/501")),
+            Category::Temp
+        );
+        assert_eq!(
+            classify(Path::new("/Volumes/SSD/.Spotlight-V100")),
+            Category::Cache
+        );
+        assert_eq!(
+            classify(Path::new("/Users/zach/Documents/project")),
+            Category::Normal
+        );
+    }
+
+    #[test]
+    fn windows_update_and_crash_paths() {
+        assert_eq!(
+            classify(Path::new(r"C:\Windows.old\Windows")),
+            Category::Cache
+        );
+        assert_eq!(
+            classify(Path::new(r"C:\$Windows.~BT\Sources")),
+            Category::Cache
+        );
+        assert_eq!(
+            classify(Path::new(r"C:\Windows\SoftwareDistribution\Download\abc")),
+            Category::Cache
+        );
+        assert_eq!(
+            classify(Path::new(r"C:\Windows\Prefetch\RINGS.EXE-123.pf")),
+            Category::Cache
+        );
+        assert_eq!(
+            classify(Path::new(r"C:\Windows\Minidump\012345.dmp")),
+            Category::Crash
+        );
+        assert_eq!(
+            classify(Path::new(
+                r"C:\Users\zach\AppData\Local\CrashDumps\rings.exe.dmp"
+            )),
+            Category::Crash
+        );
+        assert_eq!(
+            classify(Path::new(r"C:\Windows\MEMORY.DMP")),
+            Category::Crash
+        );
+        assert_eq!(
+            classify(Path::new(
+                r"C:\Users\zach\AppData\Local\Microsoft\Windows\INetCache\ie"
+            )),
+            Category::Cache
+        );
+        assert_eq!(
+            classify(Path::new(r"C:\Windows\Logs\CBS\cbs.log")),
+            Category::Log
+        );
+        assert_eq!(
+            classify(Path::new(r"C:\Windows\System32\drivers")),
+            Category::Normal
+        );
+        assert_eq!(
+            classify(Path::new(r"C:\Windows\WinSxS\manifests")),
+            Category::Normal,
+            "WinSxS is the component store, not waste"
+        );
+    }
+
+    #[test]
+    fn linux_package_and_trash_paths() {
+        assert_eq!(
+            classify(Path::new("/var/lib/apt/lists/deb.debian.org_dists")),
+            Category::Cache
+        );
+        assert_eq!(
+            classify(Path::new("/var/lib/snapd/cache/deadbeef")),
+            Category::Cache
+        );
+        assert_eq!(
+            classify(Path::new("/home/zach/.local/share/Trash/files/old")),
+            Category::Temp
+        );
+        assert_eq!(
+            classify(Path::new("/media/usb/.Trash-1000/files/x")),
+            Category::Temp
+        );
+        assert_eq!(
+            classify(Path::new("/var/lib/docker/tmp/buildkit")),
+            Category::Temp
+        );
+        assert_eq!(
+            classify(Path::new("/var/lib/docker/overlay2")),
+            Category::Normal,
+            "container layers are not waste"
         );
     }
 }

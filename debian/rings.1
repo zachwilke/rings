@@ -30,8 +30,12 @@ and
 .B \-\-json
 never enter the TUI, even in a terminal.
 .PP
-The scan stays on one filesystem by default, skips Linux virtual mounts
-(\fI/proc\fP, \fI/sys\fP, \fI/dev\fP, \fI/run\fP), never follows
+The scan stays on one filesystem by default. Linux skips
+\fI/proc\fP, \fI/sys\fP, \fI/dev\fP, \fI/run\fP, and \fI/snap\fP.
+macOS skips APFS system volumes and does not walk
+\fI/System/Volumes/Data\fP twice on a root scan (firmlinks already
+expose it). Windows does not follow NTFS junctions, and treats the
+Recycle Bin as reclaimable temp. Never follows
 symlinked directories, and counts hard-linked inodes once. Without
 root it scans what it can read.
 .PP
@@ -62,7 +66,7 @@ Print a parseable tab-separated table to stdout and exit.
 .TP
 .B \-\-offline
 Skip the GitHub Release update check that an interactive TUI launch
-otherwise runs.
+otherwise runs in the background (Ctrl+U in the popup installs).
 .TP
 .B \-\-one\-file\-system
 Stay on one filesystem (default).

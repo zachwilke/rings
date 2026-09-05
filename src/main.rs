@@ -38,7 +38,6 @@ fn main() {
         }
     }
     rings::update::cleanup_replaced_exe();
-    rings::update::maybe_offer_and_apply(&cli);
     if let Err(e) = run(cli) {
         eprintln!("rings: {e}");
         std::process::exit(1);
@@ -77,7 +76,9 @@ fn run(cli: Cli) -> Result<(), String> {
         return Ok(());
     }
 
-    rings::tui::run(cli.path.clone(), opts, cli.apparent)
+    let check_update =
+        rings::update::should_check_update(&cli, true, rings::update::env_skips_update());
+    rings::tui::run(cli.path.clone(), opts, cli.apparent, check_update)
 }
 
 fn scan_headless(

@@ -54,7 +54,6 @@ pub fn draw(buf: &mut Buffer, app: &App) -> HitMap {
         }
         View::Help => draw_help(buf),
         View::Settings => {
-            draw_main(buf, app);
             draw_settings(buf, app);
             HitMap::empty()
         }
@@ -67,6 +66,11 @@ pub fn draw(buf: &mut Buffer, app: &App) -> HitMap {
         }
         _ => draw_main(buf, app),
     };
+    if app.update_popup && !matches!(app.view, View::Confirm { .. }) {
+        let mut modal = HitMap::empty();
+        draw_update_modal(buf, app, &mut modal);
+        hits = modal;
+    }
     if let Some(menu) = app.menu.as_ref() {
         draw_menu(buf, menu, app.hover, &mut hits);
     }
@@ -118,23 +122,35 @@ fn draw_menu(buf: &mut Buffer, menu: &Menu, hover: Option<Hover>, hits: &mut Hit
 
 fn draw_settings(buf: &mut Buffer, app: &App) {
     let th = theme::current();
-    let w = 72.min(buf.width.saturating_sub(4));
-    let h = 14.min(buf.height.saturating_sub(2));
+    let (wm_w, wm_h) = logo::wordmark_size();
+    let show_mark = buf.width >= wm_w + 10 && buf.height >= wm_h + 12;
+    let w = if show_mark { (wm_w + 12).max(66) } else { 56 }.min(buf.width.saturating_sub(4));
+    let h = if show_mark { 20 } else { 12 }.min(buf.height.saturating_sub(2));
     let rect = Rect {
         x: (buf.width.saturating_sub(w)) / 2,
         y: (buf.height.saturating_sub(h)) / 2,
         width: w,
         height: h,
     };
-    buf.fill(rect, th.bg);
-    let inner = draw_box(buf, rect, " Menu · settings ", th.accent, th.accent);
-    buf.print(
-        inner.x + 1,
-        inner.y,
-        "j/k select · h/l change · Enter edit · M/Esc close",
-        th.muted,
-        th.bg,
-    );
+    buf.fill(rect, th.panel);
+    let inner = draw_box(buf, rect, "", th.accent, th.accent);
+
+    let mut y = inner.y + 1;
+    if show_mark && inner.width >= wm_w && inner.height >= wm_h + 8 {
+        let mx = inner.x + inner.width.saturating_sub(wm_w) / 2;
+        paint_wordmark(buf, mx, y, wordmark_glint_col(app, wm_w), th.panel);
+        y = y.saturating_add(wm_h);
+        y = y.saturating_add(1);
+        let rule_w = (wm_w / 3).max(12).min(inner.width.saturating_sub(4));
+        let rx = inner.x + inner.width.saturating_sub(rule_w) / 2;
+        for i in 0..rule_w {
+            buf.print(rx + i, y, "─", th.muted, th.panel);
+        }
+        y = y.saturating_add(2);
+    } else {
+        buf.print_styled(inner.x + 2, y, "settings", th.accent, th.panel, true);
+        y = y.saturating_add(2);
+    }
 
     let rows = [
         ("Theme", app.settings.theme.clone()),
@@ -146,49 +162,96 @@ fn draw_settings(buf: &mut Buffer, app: &App) {
         ),
     ];
     for (i, (label, value)) in rows.iter().enumerate() {
-        let y = inner.y + 3 + i as u16 * 2;
-        let selected = app.settings_selected == i;
-        let row_bg = if selected { th.select_bg } else { th.bg };
-        if selected {
-            buf.fill(
-                Rect {
-                    x: inner.x + 1,
-                    y,
-                    width: inner.width.saturating_sub(2),
-                    height: 1,
-                },
-                row_bg,
-            );
+        let row_y = y.saturating_add(i as u16);
+        if row_y >= inner.bottom() {
+            break;
         }
-        buf.print_styled(inner.x + 2, y, label, th.text, row_bg, selected);
+        let selected = app.settings_selected == i;
+        let row_bg = if selected { th.select_bg } else { th.panel };
+        buf.fill(
+            Rect {
+                x: inner.x + 1,
+                y: row_y,
+                width: inner.width.saturating_sub(2),
+                height: 1,
+            },
+            row_bg,
+        );
+        let mark = if selected { "▸" } else { " " };
+        let mut x = buf.print(inner.x + 2, row_y, mark, th.accent, row_bg);
+        x = buf.print(x, row_y, " ", row_bg, row_bg);
+        buf.print_styled(x, row_y, label, th.text, row_bg, selected);
         let marker = if i == 0 {
             format!("‹ {value} ›")
         } else if app.settings_edit.is_some() {
-            format!("> {value}▏")
+            format!("{value}▏")
         } else {
             value.clone()
         };
-        buf.print(
-            inner.x + 25,
-            y,
-            &truncate(&marker, inner.width.saturating_sub(27) as usize),
-            th.accent,
-            row_bg,
-        );
+        let vx = (inner.x + 24).max(x + 2);
+        let shown = truncate(&marker, inner.right().saturating_sub(vx + 2) as usize);
+        buf.print(vx, row_y, &shown, th.accent, row_bg);
     }
 
     let note = if app.settings_edit.is_some() {
-        "Type a folder path. ~ is expanded. Enter creates/saves it; Esc cancels."
+        "type a folder · ~ expands · Enter saves · Esc cancels"
     } else {
-        "Changes persist in the rings user config file. --theme still overrides startup."
+        "j/k select   h/l theme   Enter edit   m close"
     };
-    buf.print(
-        inner.x + 1,
-        inner.bottom().saturating_sub(2),
-        &truncate(note, inner.width.saturating_sub(2) as usize),
-        th.muted,
-        th.bg,
-    );
+    let ny = inner.bottom().saturating_sub(2);
+    if ny > y.saturating_add(2) {
+        buf.print(
+            inner.x + 2,
+            ny,
+            &truncate(note, inner.width.saturating_sub(4) as usize),
+            th.muted,
+            th.panel,
+        );
+    }
+}
+
+fn wordmark_glint_col(app: &App, width: u16) -> i32 {
+    let span = width as i32 + 14;
+    if span <= 0 {
+        return 0;
+    }
+    (app.started.elapsed().as_millis() / 42) as i32 % span - 4
+}
+
+fn mix_rgb(a: Rgb, b: Rgb, t: f32) -> Rgb {
+    let t = t.clamp(0.0, 1.0);
+    let lerp = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
+    Rgb(lerp(a.0, b.0), lerp(a.1, b.1), lerp(a.2, b.2))
+}
+
+/// DCP-1 RINGS, one palette hue per letter, a specular glint walking across.
+fn paint_wordmark(buf: &mut Buffer, x: u16, y: u16, glint: i32, bg: Rgb) {
+    let th = theme::current();
+    let shine = th.text;
+    for (row, line) in logo::WORDMARK.iter().enumerate() {
+        let py = y.saturating_add(row as u16);
+        if py >= buf.height {
+            break;
+        }
+        let mut cx = x;
+        for (col, ch) in line.chars().enumerate() {
+            if cx >= buf.width {
+                break;
+            }
+            if ch != ' ' {
+                let base = th.palette[logo::wordmark_letter(col) % th.palette.len()];
+                let d = (col as i32 - glint).unsigned_abs();
+                let (fg, bold) = if d <= 5 {
+                    let t = (1.0 - d as f32 / 5.0).powi(2);
+                    (mix_rgb(base, shine, t), d <= 2)
+                } else {
+                    (base, false)
+                };
+                buf.set_cell(cx, py, Cell { ch, fg, bg, bold });
+            }
+            cx = cx.saturating_add(1);
+        }
+    }
 }
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -1230,6 +1293,83 @@ fn draw_confirm_modal(buf: &mut Buffer, app: &App, hits: &mut HitMap) {
     buf.print_styled(ok.x, by, "  Delete  ", th.bg, th.danger, true);
     hits.buttons.push((cancel, Action::Cancel));
     hits.buttons.push((ok, Action::ConfirmDelete));
+}
+
+fn draw_update_modal(buf: &mut Buffer, app: &App, hits: &mut HitMap) {
+    let Some(offer) = app.update_offer.as_ref() else {
+        return;
+    };
+    let th = theme::current();
+    let w = 62.min(buf.width.saturating_sub(4)).max(40);
+    let h = 12.min(buf.height.saturating_sub(2));
+    let rect = Rect {
+        x: (buf.width.saturating_sub(w)) / 2,
+        y: (buf.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    buf.fill(rect, th.panel);
+    let inner = draw_box(buf, rect, " update ", th.accent, th.accent);
+
+    let current = crate::update::running_version();
+    let lines: Vec<(String, Rgb)> = if offer.writable {
+        vec![
+            (format!("rings {} is out", offer.version), th.text),
+            (format!("you have {current}"), th.muted),
+            (String::new(), th.muted),
+            ("Ctrl+U  update and restart".into(), th.accent),
+            ("Esc     dismiss".into(), th.muted),
+        ]
+    } else {
+        vec![
+            (format!("rings {} is out", offer.version), th.text),
+            (format!("you have {current}"), th.muted),
+            (String::new(), th.muted),
+            ("this install is not writable".into(), th.warn),
+            (
+                truncate(
+                    crate::update::installer_hint(),
+                    inner.width.saturating_sub(2) as usize,
+                )
+                .into_owned(),
+                th.muted,
+            ),
+            ("Esc     dismiss".into(), th.muted),
+        ]
+    };
+    for (i, (line, fg)) in lines.iter().enumerate() {
+        let y = inner.y + i as u16;
+        if y >= inner.bottom().saturating_sub(2) {
+            break;
+        }
+        buf.print(
+            inner.x + 2,
+            y,
+            &truncate(line, inner.width.saturating_sub(4) as usize),
+            *fg,
+            th.panel,
+        );
+    }
+
+    let by = inner.bottom().saturating_sub(1);
+    let dismiss = Rect {
+        x: inner.x + 1,
+        y: by,
+        width: 9,
+        height: 1,
+    };
+    buf.print(dismiss.x, by, " Dismiss ", th.text, th.chip);
+    hits.buttons.push((dismiss, Action::DismissUpdate));
+    if offer.writable {
+        let ok = Rect {
+            x: inner.x + 12,
+            y: by,
+            width: 8,
+            height: 1,
+        };
+        buf.print_styled(ok.x, by, " Update ", th.bg, th.accent, true);
+        hits.buttons.push((ok, Action::ApplyUpdate));
+    }
 }
 
 /// Rows a group takes: title, keys, optional note.

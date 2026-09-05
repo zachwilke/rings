@@ -277,7 +277,10 @@ mod tests {
         render(&mut buf, rect, &slices, &tree, false, None);
         let screen = buf.text();
 
-        assert!(screen.contains("big"), "the dominant branch is named:\n{screen}");
+        assert!(
+            screen.contains("big"),
+            "the dominant branch is named:\n{screen}"
+        );
         assert!(
             screen.contains("inner"),
             "and so is its child a row down:\n{screen}"

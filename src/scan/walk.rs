@@ -107,6 +107,7 @@ fn scan_inner(
             for (child_path, meta) in entries {
                 if let Some(reason) = skip_reason(
                     &child_path,
+                    path,
                     opts.one_file_system,
                     root_dev,
                     sys::path_dev(&child_path, &meta),
@@ -219,8 +220,10 @@ fn push_node(
     parent: Option<usize>,
     meta: &fs::Metadata,
 ) -> usize {
-    let is_dir = meta.is_dir();
-    let mut own_used = sys::meta_used(meta);
+    // Junctions and symlink-dirs look like directories on Windows; treating
+    // them as walkable would loop through `Documents and Settings` → Users.
+    let is_dir = sys::is_walkable_dir(meta);
+    let mut own_used = sys::meta_used(&path, meta);
     let mut own_apparent = sys::meta_size(meta);
 
     if !is_dir {
@@ -360,6 +363,16 @@ mod tests {
             tree.root_node().children.is_empty(),
             "no children should be attached when every entry is other-fs"
         );
+    }
+
+    #[test]
+    fn walkable_dir_is_a_plain_directory() {
+        let tmp = TempDir::new().unwrap();
+        let meta = fs::symlink_metadata(tmp.path()).unwrap();
+        assert!(sys::is_walkable_dir(&meta));
+        let f = tmp.path().join("f");
+        write_file(&f, 1);
+        assert!(!sys::is_walkable_dir(&fs::symlink_metadata(&f).unwrap()));
     }
 
     #[test]
