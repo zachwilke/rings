@@ -11,6 +11,9 @@ pub const EXPORT_FILE_MIN_BYTES: u64 = 1_048_576;
 /// How often the walker reports progress.
 pub const PROGRESS_EVERY_ENTRIES: u64 = 256;
 
+/// Default cap on walk worker threads. `RINGS_SCAN_THREADS` may exceed it.
+pub const SCAN_THREADS_DEFAULT_CAP: usize = 32;
+
 /// Virtual / unusable paths never descended into, even on an explicit root scan.
 /// `/proc` `/sys` `/run` are listed on all Unix: they are a no-op on macOS
 /// where those directories do not exist. `/dev` is skipped on both.

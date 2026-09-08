@@ -126,11 +126,14 @@ impl Tree {
     }
 
     /// Inclusive totals: each parent is own + sum of children.
+    ///
+    /// Parents are pushed before their children, so a reverse pass sees every
+    /// child after it has already been summed.
     pub fn recompute(&mut self) {
         for i in (0..self.nodes.len()).rev() {
+            let mut kids = std::mem::take(&mut self.nodes[i].children);
             let mut used = self.nodes[i].own_used;
             let mut apparent = self.nodes[i].own_apparent;
-            let mut kids = self.nodes[i].children.clone();
             for &c in &kids {
                 used = used.saturating_add(self.nodes[c].used);
                 apparent = apparent.saturating_add(self.nodes[c].apparent);

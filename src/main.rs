@@ -50,6 +50,7 @@ fn run(cli: Cli) -> Result<(), String> {
         one_file_system: cli.one_file_system(),
         apps: cli.app_options(),
         root_dev_override: None,
+        threads: None,
     };
 
     if !cli.wants_tui(sys::stdout_is_tty()) {

@@ -79,78 +79,87 @@ const PREFIX_RULES: &[(&str, Category)] = &[
 /// Classify an absolute or relative path. Relative paths still match
 /// well-known suffixes (`.cache`, `thumbnails`, package cache names).
 pub fn classify(path: &Path) -> Category {
+    // Fast path: UTF-8 Unix-style paths (the home-dir hot case) skip the
+    // String allocation that `replace('\\','/')` would always make.
+    if let Some(s) = path.to_str() {
+        if !s.as_bytes().contains(&b'\\') {
+            let s = trim_trailing_slash(s);
+            return classify_norm(s);
+        }
+    }
     let raw = path.to_string_lossy();
     let normalized = normalize_path(&raw);
+    classify_norm(&normalized)
+}
 
+fn classify_norm(normalized: &str) -> Category {
     for (prefix, cat) in PREFIX_RULES {
-        if path_is_or_under(&normalized, prefix) {
+        if path_is_or_under(normalized, prefix) {
             return *cat;
         }
     }
 
-    if macos_developer_cache(&normalized) {
+    if macos_developer_cache(normalized) {
         return Category::Cache;
     }
-    if has_component(&normalized, "DiagnosticReports")
-        || has_component(&normalized, "CrashReporter")
+    if has_component(normalized, "DiagnosticReports") || has_component(normalized, "CrashReporter")
     {
         return Category::Crash;
     }
-    if has_component(&normalized, ".cache") || has_component(&normalized, "Caches") {
+    if has_component(normalized, ".cache") || has_component(normalized, "Caches") {
         return Category::Cache;
     }
-    if has_component(&normalized, "Logs") && has_component(&normalized, "Library") {
+    if has_component(normalized, "Logs") && has_component(normalized, "Library") {
         return Category::Log;
     }
-    if has_component(&normalized, "Logs") && has_component_ci(&normalized, "Windows") {
+    if has_component(normalized, "Logs") && has_component_ci(normalized, "Windows") {
         return Category::Log;
     }
-    if has_component(&normalized, "thumbnails") && has_component(&normalized, ".cache")
-        || has_component(&normalized, "thumbnails") && normalized.contains("/.thumbnails")
+    if has_component(normalized, "thumbnails") && has_component(normalized, ".cache")
+        || has_component(normalized, "thumbnails") && normalized.contains("/.thumbnails")
     {
         return Category::Cache;
     }
     if normalized.contains("/.thumbnails/") || normalized.ends_with("/.thumbnails") {
         return Category::Cache;
     }
-    if is_trash(&normalized) {
+    if is_trash(normalized) {
         return Category::Temp;
     }
-    if has_component(&normalized, ".TemporaryItems")
-        || has_component(&normalized, ".Spotlight-V100")
+    if has_component(normalized, ".TemporaryItems") || has_component(normalized, ".Spotlight-V100")
     {
-        return if has_component(&normalized, ".Spotlight-V100") {
+        return if has_component(normalized, ".Spotlight-V100") {
             Category::Cache
         } else {
             Category::Temp
         };
     }
-    if has_component_ci(&normalized, "Temp")
-        && (has_component_ci(&normalized, "AppData")
-            || has_component_ci(&normalized, "Windows")
-            || has_component_ci(&normalized, "Local"))
+    if has_component_ci(normalized, "Temp")
+        && (has_component_ci(normalized, "AppData")
+            || has_component_ci(normalized, "Windows")
+            || has_component_ci(normalized, "Local"))
     {
         return Category::Temp;
     }
-    if windows_update_cache(&normalized) {
+    if windows_update_cache(normalized) {
         return Category::Cache;
     }
-    if windows_crash(&normalized) {
+    if windows_crash(normalized) {
         return Category::Crash;
     }
 
     // Package-manager cache dirs that sometimes live outside /var/cache.
-    if has_component(&normalized, "apt") && has_component(&normalized, "archives") {
+    if has_component(normalized, "apt") && has_component(normalized, "archives") {
         return Category::Cache;
     }
-    if ends_with_component(&normalized, "pacman") && normalized.contains("/cache") {
+    if ends_with_component(normalized, "pacman") && normalized.contains("/cache") {
         return Category::Cache;
     }
-    if has_component(&normalized, ".local") && has_component(&normalized, "Trash") {
+    if has_component(normalized, ".local") && has_component(normalized, "Trash") {
         return Category::Temp;
     }
 
-    if looks_like_core_dump(&normalized) {
+    if looks_like_core_dump(normalized) {
         return Category::Crash;
     }
 
@@ -209,8 +218,17 @@ fn normalize_path(raw: &str) -> String {
     s
 }
 
+fn trim_trailing_slash(s: &str) -> &str {
+    if s.len() > 1 && s.ends_with('/') {
+        &s[..s.len() - 1]
+    } else {
+        s
+    }
+}
+
 fn path_is_or_under(path: &str, prefix: &str) -> bool {
-    path == prefix || path.starts_with(&format!("{prefix}/"))
+    path == prefix
+        || (path.starts_with(prefix) && path.as_bytes().get(prefix.len()) == Some(&b'/'))
 }
 
 fn has_component(path: &str, name: &str) -> bool {
