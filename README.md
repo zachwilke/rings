@@ -149,6 +149,13 @@ On an interactive TUI launch, rings checks GitHub Releases in the background. If
 
 rings stays on one filesystem (`--all-filesystems` to cross). Linux skips `/proc` `/sys` `/dev` `/run` `/snap`. macOS skips APFS system volumes (Preboot, VM, Update, …) and does not walk `/System/Volumes/Data` a second time when you scan `/` — firmlinks already show that tree as `/Users`, `/Applications`, `/Library`. Windows skips `System Volume Information` and does not follow NTFS junctions (so `Documents and Settings` cannot double-count `Users`); the Recycle Bin is scanned and tagged as temp. Never follows symlinked directories, counts hard-linked inodes once, and counts permission errors instead of crashing. Without root it scans what it can read and reminds you `sudo rings /` (or Administrator on Windows) sees everything.
 
+Scans walk directories in parallel (one worker per CPU, default cap 32). `RINGS_SCAN_THREADS=1` forces the original single-thread walk; a higher number raises the cap. On macOS, directory reads use `getattrlistbulk` so file metadata arrives in batches instead of one `lstat` per name (`RINGS_SCAN_NO_BULK=1` turns that off). Time a real tree:
+
+```bash
+RINGS_SCAN_TIMING=1 rings --plain --offline ~
+RINGS_SCAN_THREADS=1 RINGS_SCAN_TIMING=1 rings --plain --offline ~
+```
+
 Press `?` or `F1` in the TUI for the full key list (the footer always hints `? help`). `rings help` and `rings --help` print the same list.
 
 | Keys | Mouse |

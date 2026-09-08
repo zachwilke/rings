@@ -19,7 +19,7 @@ pub fn is_special_path(path: &Path) -> bool {
         let raw = path.to_string_lossy();
         let s = raw.trim_end_matches('/');
         for special in SPECIAL_SKIP_PATHS {
-            if s == *special || s.starts_with(&format!("{special}/")) {
+            if path_is_or_under(s, special) {
                 return true;
             }
         }
@@ -29,6 +29,11 @@ pub fn is_special_path(path: &Path) -> bool {
     {
         windows_special(path)
     }
+}
+
+fn path_is_or_under(path: &str, prefix: &str) -> bool {
+    path == prefix
+        || (path.starts_with(prefix) && path.as_bytes().get(prefix.len()) == Some(&b'/'))
 }
 
 #[cfg(windows)]
@@ -79,12 +84,20 @@ pub fn skip_reason(
 /// `/private`, …). Walking both copies every file. Skip the alias unless
 /// Data itself (or a path under it) is the scan root.
 pub fn is_apfs_data_alias(path: &Path, scan_root: &Path) -> bool {
-    let path = unix_abs(path);
-    if path != "/System/Volumes/Data" {
+    if let Some(s) = path.to_str() {
+        if !is_data_volume(s) {
+            return false;
+        }
+    } else if unix_abs(path) != "/System/Volumes/Data" {
         return false;
     }
     let root = unix_abs(scan_root);
     root != "/System/Volumes/Data" && !root.starts_with("/System/Volumes/Data/")
+}
+
+fn is_data_volume(s: &str) -> bool {
+    let s = s.trim_end_matches(['/', '\\']);
+    s == "/System/Volumes/Data" || s == r"\System\Volumes\Data"
 }
 
 fn unix_abs(path: &Path) -> String {
