@@ -156,10 +156,13 @@ Press `?` or `F1` in the TUI for the full key list (the footer always hints `? h
 | `j` `k` / arrows — move | click a slice or row — select |
 | Enter — drill in | double-click — drill in |
 | `h` / Backspace — go up · `-` — picker | right-click — context menu |
-| Space — mark for delete · `f` — temp & cache · `c` — collector | click the footer buttons |
-| `x` — confirm delete · `e` — export CSV · `m` — settings · `?` `F1` — help · `q` — quit | click a breadcrumb — jump |
+| `/` — find by name or type (`.mp4`, `cache`, …) | click the footer buttons |
+| Space — mark for delete · `f` — temp & cache · `c` — collector | click a breadcrumb — jump |
+| `x` — confirm delete · `e` — export CSV · `m` — settings · `?` `F1` — help · `q` — quit | |
 
 In the picker: `j` `k` move, `Enter` opens a directory, `h` goes up, `s` scans the highlighted one, `Esc` goes back to the scan you came from.
+
+After a scan, `/` opens a scan-wide fuzzy finder (name, extension, or waste category — `mp4`, `.iso`, `cache`, `node_modules`). Live results show size and path; an empty query lists the largest items under the current scope. Enter jumps the sunburst to that node; Space marks it for the collector; Tab toggles whole-scan vs the directory you drilled into; Esc closes. Capped at the top 200 hits so a large home stays snappy.
 
 Hovering highlights rows, slices, and buttons; hovering a slice shows its path, size, and share of its parent in the footer. The scroll wheel moves the cursor. Right-click any slice, row, or picker entry for a context menu — open, mark for delete, or delete that file or directory. Deleting from the menu marks the item and opens the same confirm modal as `x`; it never unlinks on the click.
 

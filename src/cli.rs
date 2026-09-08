@@ -26,8 +26,9 @@ pub const KEY_GROUPS: &[KeyGroup] = &[
             ("Enter", "drill into directory"),
             ("h Backspace ←", "go up one directory"),
             ("-", "back to the picker"),
+            ("/", "fuzzy find files"),
         ],
-        note: None,
+        note: Some("empty query = largest"),
     },
     KeyGroup {
         title: "Views",

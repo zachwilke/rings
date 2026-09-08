@@ -8,6 +8,7 @@ use crate::logo;
 use crate::size::{group_u64, human_bytes};
 use crate::term::{Buffer, Cell, Rect, Rgb};
 use crate::tui::app::{node_label, Action, App, Hover, Layout, Menu, MenuAction, View};
+use crate::tui::finder;
 use crate::tui::icicle;
 use crate::tui::sunburst::{self, Slice};
 use crate::tui::theme::{self, category_color};
@@ -62,6 +63,12 @@ pub fn draw(buf: &mut Buffer, app: &App) -> HitMap {
             draw_main(buf, app);
             let mut hits = HitMap::empty();
             draw_confirm_modal(buf, app, &mut hits);
+            hits
+        }
+        View::Finder => {
+            draw_main(buf, app);
+            let mut hits = HitMap::empty();
+            draw_finder(buf, app, &mut hits);
             hits
         }
         _ => draw_main(buf, app),
@@ -1071,6 +1078,7 @@ fn chip_is_active(app: &App, action: Action) -> bool {
         (View::Findings, Action::Findings)
             | (View::Databases, Action::Databases)
             | (View::Collector, Action::Collector)
+            | (View::Finder, Action::FinderScope)
     )
 }
 
@@ -1156,18 +1164,27 @@ fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
         ],
         View::Findings => vec![
             ("j/k", "move"),
+            ("/", "find"),
             ("Enter", "jump"),
             ("Space", "mark"),
             ("?", "help"),
         ],
         View::Databases => vec![
             ("j/k", "move"),
+            ("/", "find"),
             ("Enter", "jump"),
             ("b", "close"),
             ("?", "help"),
         ],
+        View::Finder => vec![
+            ("type", "filter"),
+            ("Enter", "jump"),
+            ("Tab", "scope"),
+            ("Esc", "close"),
+        ],
         _ => vec![
             ("j/k", "move"),
+            ("/", "find"),
             ("Enter", "drill"),
             ("Space", "mark"),
             ("?", "help"),
@@ -1225,6 +1242,260 @@ fn draw_footer_path(buf: &mut Buffer, app: &App, y: u16, width: u16) {
         color,
         th.bg,
     );
+}
+
+/// Left-ellipsis so a long path keeps the leaf, which is what you typed for.
+fn truncate_left(s: &str, max: usize) -> Cow<'_, str> {
+    if max == 0 {
+        return Cow::Borrowed("");
+    }
+    let n = s.chars().count();
+    if n <= max {
+        return Cow::Borrowed(s);
+    }
+    if max <= 1 {
+        return Cow::Borrowed("…");
+    }
+    let skip = n - (max - 1);
+    let mut out = String::from("…");
+    out.extend(s.chars().skip(skip));
+    Cow::Owned(out)
+}
+
+fn print_marked(
+    buf: &mut Buffer,
+    x: u16,
+    y: u16,
+    text: &str,
+    marks: &[usize],
+    fg: Rgb,
+    hi: Rgb,
+    bg: Rgb,
+    bold: bool,
+) -> u16 {
+    let mut cx = x;
+    for (i, ch) in text.chars().enumerate() {
+        if cx >= buf.width {
+            break;
+        }
+        let (c_fg, c_bold) = if marks.contains(&i) {
+            (hi, true)
+        } else {
+            (fg, bold)
+        };
+        buf.set_cell(
+            cx,
+            y,
+            crate::term::Cell {
+                ch,
+                fg: c_fg,
+                bg,
+                bold: c_bold,
+            },
+        );
+        cx = cx.saturating_add(1);
+    }
+    cx
+}
+
+fn draw_finder(buf: &mut Buffer, app: &App, hits: &mut HitMap) {
+    let th = theme::current();
+    let w = buf.width.saturating_sub(2).max(24.min(buf.width));
+    let h = buf.height.saturating_sub(2).max(8.min(buf.height));
+    let rect = Rect {
+        x: buf.width.saturating_sub(w) / 2,
+        y: buf.height.saturating_sub(h) / 2,
+        width: w,
+        height: h,
+    };
+    buf.fill(rect, th.bg);
+    let title = if app.finder.query.is_empty() {
+        " find · largest "
+    } else {
+        " find "
+    };
+    let inner = draw_box(buf, rect, title, th.accent, th.accent);
+    if inner.width < 8 || inner.height < 3 {
+        return;
+    }
+
+    let scope = if app.finder.whole_scan {
+        " scan "
+    } else {
+        " here "
+    };
+    let scope_w = scope.chars().count() as u16;
+    let prompt_w = inner.width.saturating_sub(scope_w + 1) as usize;
+    let raw_prompt = format!("/ {}", app.finder.query);
+    let prompt = truncate(&raw_prompt, prompt_w.saturating_sub(1));
+    let x = buf.print(inner.x + 1, inner.y, &prompt, th.text, th.bg);
+    buf.print_styled(x, inner.y, "█", th.accent, th.bg, true);
+
+    let scope_x = inner.right().saturating_sub(scope_w + 1);
+    let scope_rect = Rect {
+        x: scope_x,
+        y: inner.y,
+        width: scope_w,
+        height: 1,
+    };
+    let scope_hover = app.hover == Some(Hover::Button(Action::FinderScope));
+    let (sfg, sbg) = if scope_hover {
+        (th.text, th.select_bg)
+    } else {
+        (th.bg, th.accent)
+    };
+    buf.print_styled(scope_x, inner.y, scope, sfg, sbg, true);
+    hits.buttons.push((scope_rect, Action::FinderScope));
+
+    let n = app.finder.results.len();
+    let count = if app.finder.query.is_empty() {
+        if n == 0 {
+            "nothing under this scope".to_string()
+        } else {
+            format!("{n} largest · type to filter · Tab scopes")
+        }
+    } else if n == 0 {
+        "no match".to_string()
+    } else {
+        format!("{n} match{} · Tab scopes", if n == 1 { "" } else { "es" })
+    };
+    if inner.height > 2 {
+        buf.print(
+            inner.x + 1,
+            inner.y + 1,
+            &truncate(&count, inner.width.saturating_sub(2) as usize),
+            th.muted,
+            th.bg,
+        );
+    }
+
+    let hint_h = u16::from(inner.height > 4);
+    let list_y = inner.y + 2;
+    let list_h = inner
+        .height
+        .saturating_sub(2 + hint_h)
+        .min(inner.bottom().saturating_sub(list_y + hint_h));
+    let list = Rect {
+        x: inner.x,
+        y: list_y,
+        width: inner.width,
+        height: list_h,
+    };
+    hits.list = list;
+
+    if let Some(tree) = app.tree() {
+        let start = app.finder.offset.min(n.saturating_sub(1));
+        for (row, (i, hit)) in app
+            .finder
+            .results
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(list.height as usize)
+            .enumerate()
+        {
+            let y = list.y + row as u16;
+            if y >= list.bottom() {
+                break;
+            }
+            let node = tree.get(hit.node);
+            let sel = i == app.finder.selected;
+            let row_bg = list_row(buf, hits, list, y, i, sel, app.hovered_row(i));
+            let color = if node.category.is_waste() {
+                category_color(node.category)
+            } else {
+                th.palette[i % th.palette.len()]
+            };
+            let mark = if app.collector.contains_path(&node.path) {
+                "●"
+            } else {
+                "·"
+            };
+            let size = human_bytes(hit.size);
+            let mut cx = buf.print(list.x + 1, y, mark, color, row_bg);
+            cx = buf.print(cx, y, " ", color, row_bg);
+            let size_col = format!("{size:>8}");
+            cx = buf.print(
+                cx,
+                y,
+                &size_col,
+                if sel { th.text } else { th.muted },
+                row_bg,
+            );
+            cx = buf.print(cx, y, "  ", th.muted, row_bg);
+
+            let mut name = node.name.clone();
+            if node.is_dir {
+                name.push('/');
+            }
+            let rest = list.right().saturating_sub(cx + 2) as usize;
+            let name_budget = rest.min(28).max(8.min(rest));
+            let shown_name = truncate(&name, name_budget);
+            let marks: Vec<usize> = hit
+                .name_marks
+                .iter()
+                .copied()
+                .filter(|&i| i < shown_name.chars().count())
+                .collect();
+            cx = print_marked(
+                buf,
+                cx,
+                y,
+                &shown_name,
+                &marks,
+                th.text,
+                th.warn,
+                row_bg,
+                sel,
+            );
+
+            let path_budget = list.right().saturating_sub(cx + 2) as usize;
+            if path_budget > 4 {
+                let rel = finder::relative_path(tree, hit.node);
+                if rel != node.name {
+                    cx = buf.print(cx, y, "  ", th.muted, row_bg);
+                    buf.print(
+                        cx,
+                        y,
+                        &truncate_left(&rel, path_budget.saturating_sub(2)),
+                        th.muted,
+                        row_bg,
+                    );
+                }
+            }
+        }
+    }
+
+    if hint_h > 0 {
+        let hy = inner.bottom().saturating_sub(1);
+        draw_hints(
+            buf,
+            inner.x + 1,
+            hy,
+            &[
+                ("Enter", "jump"),
+                ("Space", "mark"),
+                ("Tab", "scope"),
+                ("Esc", "close"),
+            ],
+        );
+        let close = Rect {
+            x: inner.right().saturating_sub(8),
+            y: hy,
+            width: 7,
+            height: 1,
+        };
+        if close.x > inner.x + 40 {
+            let hovered = app.hover == Some(Hover::Button(Action::Back));
+            let (fg, bg_c) = if hovered {
+                (th.text, th.select_bg)
+            } else {
+                (th.bg, th.accent)
+            };
+            buf.print_styled(close.x, hy, " Close ", fg, bg_c, true);
+            hits.buttons.push((close, Action::Back));
+        }
+    }
 }
 
 fn draw_confirm_modal(buf: &mut Buffer, app: &App, hits: &mut HitMap) {

@@ -86,6 +86,7 @@ pub fn decode(bytes: &[u8]) -> Vec<Event> {
             0x7f | 0x08 => events.push(Event::Key(Key::Backspace)),
             0x03 => events.push(Event::Key(Key::Char('q'))), // Ctrl-C quits
             0x15 => events.push(Event::Key(Key::CtrlU)),     // Ctrl+U update
+            b'\t' => events.push(Event::Key(Key::Char('\t'))),
             b if b >= 0x20 && b < 0x7f => {
                 events.push(Event::Key(Key::Char(b as char)));
             }
@@ -198,6 +199,7 @@ mod tests {
         assert_eq!(decode(&[0x7f]), vec![Event::Key(Key::Backspace)]);
         assert_eq!(decode(&[0x1b]), vec![Event::Key(Key::Esc)]);
         assert_eq!(decode(&[0x15]), vec![Event::Key(Key::CtrlU)]);
+        assert_eq!(decode(b"\t"), vec![Event::Key(Key::Char('\t'))]);
     }
 
     #[test]
