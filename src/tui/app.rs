@@ -10,6 +10,7 @@ use crate::scan::{Progress, Tree};
 use crate::settings::Settings;
 use crate::size::human_bytes;
 use crate::sys;
+use crate::tui::finder::Finder;
 use crate::tui::picker::Picker;
 
 /// Rows the list scrolls by; the browse list uses the same page.
@@ -23,9 +24,14 @@ pub enum View {
     Findings,
     Databases,
     Collector,
-    Confirm { typed: String },
+    Confirm {
+        typed: String,
+    },
     Help,
     Settings,
+    /// Scan-wide fuzzy finder overlay. Drawn over Browse; Esc restores
+    /// `previous_view`.
+    Finder,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +54,8 @@ pub enum Action {
     /// Install the offered GitHub Release and re-exec.
     ApplyUpdate,
     DismissUpdate,
+    /// Toggle finder scope: whole scan ↔ current directory.
+    FinderScope,
 }
 
 /// How the browse view draws the tree. Both layouts consume the same
@@ -192,6 +200,7 @@ pub struct App {
     pub update_popup: bool,
     /// After leaving raw mode, download this tag and re-exec.
     pub pending_apply: Option<(String, &'static str)>,
+    pub finder: Finder,
 }
 
 impl App {
@@ -227,6 +236,7 @@ impl App {
             update_offer: None,
             update_popup: false,
             pending_apply: None,
+            finder: Finder::default(),
         }
     }
 
@@ -250,6 +260,7 @@ impl App {
             View::Databases => self.databases.len(),
             View::Collector => self.collector.len(),
             View::Browse | View::Confirm { .. } => self.current_children().len(),
+            View::Finder => self.finder.results.len(),
             _ => 0,
         }
     }
@@ -264,6 +275,7 @@ impl App {
             }
             View::Findings => self.findings_selected = i,
             View::Databases => self.databases_selected = i,
+            View::Finder => self.finder.select_row(i),
             _ => self.selected = i,
         }
     }
@@ -393,6 +405,7 @@ impl App {
         self.databases_selected = 0;
         self.list_offset = 0;
         self.picker = None;
+        self.finder.reset();
         self.status.clear();
         self.started = Instant::now();
         self.view = View::Scanning;
@@ -403,7 +416,9 @@ impl App {
     pub fn open_menu(&mut self, x: u16, y: u16) {
         let (title, items) = match self.view {
             View::Picker => self.picker_menu_items(),
-            View::Browse | View::Findings | View::Collector => self.node_menu_items(),
+            View::Browse | View::Findings | View::Collector | View::Finder => {
+                self.node_menu_items()
+            }
             _ => return,
         };
         if items.is_empty() {
@@ -538,6 +553,80 @@ impl App {
         self.view = View::Help;
     }
 
+    /// Open the scan-wide finder. Empty query lists the largest nodes under
+    /// the current scope (whole scan by default).
+    pub fn open_finder(&mut self) {
+        if self.tree.is_none() {
+            self.status = "scan first, then / to find".into();
+            return;
+        }
+        if matches!(self.view, View::Finder) {
+            return;
+        }
+        self.previous_view = self.view.clone();
+        self.finder.reset();
+        self.rescore_finder();
+        self.view = View::Finder;
+        self.status.clear();
+    }
+
+    pub fn close_finder(&mut self) {
+        let back = self.previous_view.clone();
+        self.view = if matches!(back, View::Finder | View::Scanning | View::Confirm { .. }) {
+            View::Browse
+        } else {
+            back
+        };
+    }
+
+    pub fn rescore_finder(&mut self) {
+        let Some(tree) = self.tree.as_ref() else {
+            self.finder.results.clear();
+            return;
+        };
+        let scope = if self.finder.whole_scan {
+            tree.root
+        } else {
+            tree.node_at(&self.cwd)
+        };
+        self.finder.rescore(tree, scope, self.apparent);
+    }
+
+    pub fn finder_type(&mut self, ch: char) {
+        self.finder.type_char(ch);
+        self.finder.selected = 0;
+        self.finder.offset = 0;
+        self.rescore_finder();
+    }
+
+    pub fn finder_backspace(&mut self) {
+        self.finder.backspace();
+        self.finder.selected = 0;
+        self.finder.offset = 0;
+        self.rescore_finder();
+    }
+
+    pub fn finder_toggle_scope(&mut self) {
+        self.finder.toggle_scope();
+        self.rescore_finder();
+        let where_ = if self.finder.whole_scan {
+            "whole scan"
+        } else {
+            "this directory"
+        };
+        self.status = format!("find in {where_}");
+    }
+
+    /// Jump the browse cursor onto the highlighted hit and close the finder.
+    pub fn finder_jump(&mut self) {
+        let Some(id) = self.finder.selected_node() else {
+            self.status = "no match".into();
+            return;
+        };
+        self.focus_node(id);
+        self.status.clear();
+    }
+
     /// Leave the help overlay for whatever view opened it.
     pub fn close_help(&mut self) {
         self.view = self.previous_view.clone();
@@ -659,6 +748,7 @@ impl App {
             View::Databases => self.databases.get(self.databases_selected).map(|e| e.node),
             View::Collector => self.collector.items().get(self.selected).map(|i| i.node_id),
             View::Browse | View::Confirm { .. } => self.selected_id(),
+            View::Finder => self.finder.selected_node(),
             _ => None,
         }
     }
@@ -701,6 +791,7 @@ impl App {
                 *idx = step(*idx, delta, len);
                 self.list_offset = scroll_to_show(*idx, self.list_offset, LIST_PAGE);
             }
+            View::Finder => self.finder.move_sel(delta),
             _ => {}
         }
     }
@@ -733,6 +824,7 @@ impl App {
                 }
             }
             View::Picker => self.picker_enter(),
+            View::Finder => self.finder_jump(),
             _ => {}
         }
     }
@@ -741,6 +833,7 @@ impl App {
         match self.view {
             View::Help => self.close_help(),
             View::Settings => self.close_settings(),
+            View::Finder => self.close_finder(),
             View::Findings | View::Collector | View::Databases => {
                 self.view = View::Browse;
             }
@@ -787,7 +880,7 @@ impl App {
     pub fn toggle_mark_selected(&mut self) {
         if !matches!(
             self.view,
-            View::Browse | View::Findings | View::Collector | View::Databases
+            View::Browse | View::Findings | View::Collector | View::Databases | View::Finder
         ) {
             return;
         }

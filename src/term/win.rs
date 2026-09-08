@@ -219,6 +219,7 @@ fn map_vk(vk: u16, uchar: u16) -> Option<Key> {
         win32::VK_LEFT => Some(Key::Left),
         win32::VK_RIGHT => Some(Key::Right),
         win32::VK_RETURN => Some(Key::Enter),
+        win32::VK_TAB => Some(Key::Char('\t')),
         win32::VK_BACK => Some(Key::Backspace),
         win32::VK_ESCAPE => Some(Key::Esc),
         win32::VK_PRIOR => Some(Key::PageUp),

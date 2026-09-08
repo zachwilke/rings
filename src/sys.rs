@@ -91,6 +91,7 @@ pub(crate) mod win32 {
     pub const LEFT_CTRL_PRESSED: u32 = 0x0008;
     pub const RIGHT_CTRL_PRESSED: u32 = 0x0004;
 
+    pub const VK_TAB: u16 = 0x09;
     pub const VK_BACK: u16 = 0x08;
     pub const VK_RETURN: u16 = 0x0D;
     pub const VK_ESCAPE: u16 = 0x1B;

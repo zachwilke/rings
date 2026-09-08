@@ -1,5 +1,6 @@
 mod app;
 mod draw;
+pub mod finder;
 mod icicle;
 mod picker;
 mod sunburst;
@@ -217,6 +218,11 @@ fn handle_key(app: &mut App, key: Key) {
         return;
     }
 
+    if matches!(app.view, View::Finder) {
+        handle_finder_key(app, key);
+        return;
+    }
+
     if handle_common_key(app, key) {
         return;
     }
@@ -236,6 +242,11 @@ fn handle_key(app: &mut App, key: Key) {
     match key {
         Key::Enter => app.drill(),
         Key::Backspace | Key::Left | Key::Char('h') => go_back(app),
+        Key::Char('/') => {
+            if app.tree().is_some() {
+                app.open_finder();
+            }
+        }
         Key::Char(' ') | Key::Char('d') => app.toggle_mark_selected(),
         Key::Char('-') => app.open_picker_from_scan(),
         Key::Char('f') => app.open_findings(),
@@ -351,6 +362,21 @@ fn handle_click(app: &mut App, hits: &HitMap, x: u16, y: u16) {
         app.close_help();
         return;
     }
+    if matches!(app.view, View::Finder) {
+        let dbl = app.register_click(x, y);
+        match target_at(app, hits, x, y) {
+            Some(Hover::Button(action)) => do_action(app, action),
+            Some(Hover::Row(i)) => {
+                app.select_row(i);
+                if dbl {
+                    app.finder_jump();
+                }
+            }
+            Some(Hover::Menu(_)) => {}
+            _ => app.close_finder(),
+        }
+        return;
+    }
     let dbl = app.register_click(x, y);
     match target_at(app, hits, x, y) {
         Some(Hover::Button(action)) => do_action(app, action),
@@ -400,6 +426,24 @@ fn do_action(app: &mut App, action: Action) {
         Action::BackToScan => app.resume_scan(),
         Action::ApplyUpdate => app.accept_update(),
         Action::DismissUpdate => app.dismiss_update(),
+        Action::FinderScope => app.finder_toggle_scope(),
+    }
+}
+
+fn handle_finder_key(app: &mut App, key: Key) {
+    match key {
+        Key::Esc => app.close_finder(),
+        Key::Enter => app.finder_jump(),
+        Key::Backspace => app.finder_backspace(),
+        Key::Up => app.move_sel(-1),
+        Key::Down => app.move_sel(1),
+        Key::PageUp => app.move_sel(-10),
+        Key::PageDown => app.move_sel(10),
+        Key::F1 => app.open_help(),
+        Key::Char('\t') => app.finder_toggle_scope(),
+        Key::Char(' ') => app.toggle_mark_selected(),
+        Key::Char(c) if !c.is_control() => app.finder_type(c),
+        _ => {}
     }
 }
 
@@ -1789,5 +1833,226 @@ mod tests {
         handle_click(&mut app, &hits, update.0.x, update.0.y);
         assert!(app.pending_apply.is_some());
         assert!(app.quit);
+    }
+
+    #[test]
+    fn slash_opens_finder_empty_query_lists_largest() {
+        let th = theme::current();
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.set_tree(tree);
+        app.view = View::Browse;
+
+        handle_key(&mut app, Key::Char('/'));
+        assert_eq!(app.view, View::Finder);
+        assert!(app.finder.query.is_empty());
+        assert!(
+            !app.finder.results.is_empty(),
+            "empty query shows the largest nodes"
+        );
+        let sizes: Vec<u64> = app.finder.results.iter().map(|h| h.size).collect();
+        assert!(
+            sizes.windows(2).all(|w| w[0] >= w[1]),
+            "largest first: {sizes:?}"
+        );
+
+        let mut buf = Buffer::new(80, 24, th.bg);
+        let hits = draw::draw(&mut buf, &app);
+        let screen = buf.text();
+        assert!(screen.contains("find"), "overlay title:\n{screen}");
+        assert!(screen.contains("largest"), "empty-query hint:\n{screen}");
+        assert!(
+            screen.contains("usr") || screen.contains("var"),
+            "a big top-level name should appear:\n{screen}"
+        );
+        assert!(!hits.rows.is_empty(), "finder rows are hit-testable");
+        assert!(
+            hits.buttons.iter().any(|(_, a)| *a == Action::FinderScope),
+            "scope chip is clickable"
+        );
+    }
+
+    #[test]
+    fn finder_filters_by_name_and_extension_then_enter_jumps() {
+        let th = theme::current();
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        fs::write(tmp.path().join("holiday.mp4"), vec![b'x'; 50_000]).unwrap();
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.set_tree(tree);
+        app.view = View::Browse;
+
+        handle_key(&mut app, Key::Char('/'));
+        for c in "mp4".chars() {
+            handle_key(&mut app, Key::Char(c));
+        }
+        assert_eq!(app.finder.query, "mp4");
+        let top = app
+            .finder
+            .selected_node()
+            .and_then(|id| app.tree().map(|t| t.get(id).name.clone()));
+        assert_eq!(top.as_deref(), Some("holiday.mp4"));
+
+        let mut buf = Buffer::new(80, 24, th.bg);
+        draw::draw(&mut buf, &app);
+        let screen = buf.text();
+        assert!(screen.contains("holiday.mp4"), "name:\n{screen}");
+        assert!(
+            screen.contains("KB") || screen.contains("B"),
+            "size column:\n{screen}"
+        );
+
+        handle_key(&mut app, Key::Enter);
+        assert_eq!(app.view, View::Browse, "Enter leaves the finder");
+        assert_eq!(
+            app.selected_path()
+                .as_deref()
+                .and_then(|p| std::path::Path::new(p).file_name())
+                .and_then(|n| n.to_str()),
+            Some("holiday.mp4"),
+            "browse cursor is on the hit"
+        );
+    }
+
+    #[test]
+    fn finder_esc_closes_and_browse_still_has_a_sunburst() {
+        let th = theme::current();
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.set_tree(tree);
+        app.view = View::Browse;
+
+        handle_key(&mut app, Key::Char('/'));
+        handle_key(&mut app, Key::Char('l'));
+        handle_key(&mut app, Key::Esc);
+        assert_eq!(app.view, View::Browse);
+
+        let mut buf = Buffer::new(100, 28, th.bg);
+        let hits = draw::draw(&mut buf, &app);
+        let screen = buf.text();
+        let has_dots = screen.chars().any(sunburst::is_braille);
+        assert!(has_dots, "sunburst survives closing the finder:\n{screen}");
+        assert!(!hits.slices.is_empty());
+        assert!(
+            !screen.contains("find · largest"),
+            "overlay is gone:\n{screen}"
+        );
+    }
+
+    #[test]
+    fn finder_space_marks_into_the_collector() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.set_tree(tree);
+        app.view = View::Browse;
+
+        handle_key(&mut app, Key::Char('/'));
+        for c in "syslog".chars() {
+            handle_key(&mut app, Key::Char(c));
+        }
+        let path = app.selected_path().expect("a hit");
+        handle_key(&mut app, Key::Char(' '));
+        assert!(
+            app.collector.contains_path(std::path::Path::new(&path)),
+            "Space marks the highlighted hit"
+        );
+        assert!(
+            matches!(app.view, View::Finder),
+            "marking does not close the finder"
+        );
+        assert!(app.status.contains("marked"), "{}", app.status);
+    }
+
+    #[test]
+    fn finder_tab_scopes_to_the_current_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        fs::write(tmp.path().join("root-only.iso"), vec![b'x'; 4000]).unwrap();
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.set_tree(tree);
+        app.view = View::Browse;
+        // Drill into the largest child (usr in the fixture).
+        app.drill();
+
+        handle_key(&mut app, Key::Char('/'));
+        for c in "root-only".chars() {
+            handle_key(&mut app, Key::Char(c));
+        }
+        assert!(
+            app.finder
+                .results
+                .iter()
+                .any(|h| app.tree().unwrap().get(h.node).name == "root-only.iso"),
+            "whole-scan sees root-only.iso"
+        );
+        handle_key(&mut app, Key::Char('\t'));
+        assert!(!app.finder.whole_scan);
+        assert!(
+            app.finder.results.is_empty(),
+            "here-scope should miss a file that lives on the scan root"
+        );
+    }
+
+    #[test]
+    fn finder_cache_query_hits_classified_waste() {
+        let th = theme::current();
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.set_tree(tree);
+        app.view = View::Browse;
+
+        handle_key(&mut app, Key::Char('/'));
+        for c in "cache".chars() {
+            handle_key(&mut app, Key::Char(c));
+        }
+        assert!(
+            app.finder.results.iter().any(|h| {
+                let n = app.tree().unwrap().get(h.node);
+                n.name.contains("cache")
+                    || n.path.to_string_lossy().contains("cache")
+                    || n.category == crate::classify::Category::Cache
+            }),
+            "cache query should surface cache-named or tagged paths"
+        );
+
+        let mut buf = Buffer::new(80, 24, th.bg);
+        draw::draw(&mut buf, &app);
+        let screen = buf.text();
+        assert!(
+            screen.contains("cache") || screen.contains(".cache") || screen.contains("apt"),
+            "render names a cache hit:\n{screen}"
+        );
+    }
+
+    #[test]
+    fn finder_click_selects_and_miss_closes() {
+        let th = theme::current();
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_nested_fixture(tmp.path());
+        let tree = crate::scan::scan(tmp.path(), WalkOptions::default()).unwrap();
+        let mut app = App::new(tmp.path().to_path_buf(), false);
+        app.set_tree(tree);
+        app.view = View::Browse;
+        handle_key(&mut app, Key::Char('/'));
+
+        let mut buf = Buffer::new(80, 24, th.bg);
+        let hits = draw::draw(&mut buf, &app);
+        assert!(hits.rows.len() >= 2);
+        handle_click(&mut app, &hits, hits.list.x + 2, hits.rows[1].0.y);
+        assert_eq!(app.finder.selected, 1);
+        assert_eq!(app.view, View::Finder);
+
+        handle_click(&mut app, &hits, 0, 0);
+        assert_eq!(app.view, View::Browse, "click outside closes");
     }
 }
