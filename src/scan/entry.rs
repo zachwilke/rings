@@ -4,10 +4,6 @@
 //! (and the cached `FindFirstFile` record on Windows). That is the same
 //! symlink semantics as `fs::symlink_metadata`, without building the full
 //! path just to stat it.
-//!
-//! On macOS, `getattrlistbulk` can fill names + file sizes in one syscall
-//! per buffer. Directories and anything missing attributes fall back to
-//! `lstat` so used-byte accounting stays exact.
 
 use std::fs;
 use std::io;
@@ -15,9 +11,6 @@ use std::path::{Path, PathBuf};
 
 use crate::scan::tree::ScanStats;
 use crate::sys;
-
-#[cfg(target_os = "macos")]
-use crate::scan::darwin;
 
 /// One directory child with everything the walker needs from a stat.
 #[derive(Debug)]
@@ -54,17 +47,6 @@ pub fn note_error(stats: &mut ScanStats, err: &io::Error) {
 
 /// Children of `dir`. Never follows directory symlinks (lstat / no-follow).
 pub fn read_dir_entries(dir: &Path, stats: &mut ScanStats) -> Vec<DirEntryInfo> {
-    #[cfg(target_os = "macos")]
-    {
-        if darwin::bulk_enabled() {
-            match darwin::read_dir_bulk(dir, stats) {
-                Ok(entries) => return entries,
-                Err(_) => {
-                    // Unsupported fs, parse failure, or open error — std path.
-                }
-            }
-        }
-    }
     read_dir_entries_std(dir, stats)
 }
 

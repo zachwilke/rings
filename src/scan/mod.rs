@@ -1,5 +1,3 @@
-#[cfg(target_os = "macos")]
-mod darwin;
 mod entry;
 pub mod skip;
 pub mod tree;
