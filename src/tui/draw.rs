@@ -1267,7 +1267,7 @@ fn print_marked(
     x: u16,
     y: u16,
     text: &str,
-    marks: &[usize],
+    marks: finder::Marks,
     fg: Rgb,
     hi: Rgb,
     bg: Rgb,
@@ -1278,7 +1278,7 @@ fn print_marked(
         if cx >= buf.width {
             break;
         }
-        let (c_fg, c_bold) = if marks.contains(&i) {
+        let (c_fg, c_bold) = if marks.contains(i) {
             (hi, true)
         } else {
             (fg, bold)
@@ -1424,30 +1424,24 @@ fn draw_finder(buf: &mut Buffer, app: &App, hits: &mut HitMap) {
             );
             cx = buf.print(cx, y, "  ", th.muted, row_bg);
 
-            let mut name = node.name.clone();
-            if node.is_dir {
-                name.push('/');
-            }
             let rest = list.right().saturating_sub(cx + 2) as usize;
             let name_budget = rest.min(28).max(8.min(rest));
-            let shown_name = truncate(&name, name_budget);
-            let marks: Vec<usize> = hit
-                .name_marks
-                .iter()
-                .copied()
-                .filter(|&i| i < shown_name.chars().count())
-                .collect();
+            let dir_slash = usize::from(node.is_dir);
+            let shown_name = truncate(&node.name, name_budget.saturating_sub(dir_slash));
             cx = print_marked(
                 buf,
                 cx,
                 y,
                 &shown_name,
-                &marks,
+                hit.name_marks,
                 th.text,
                 th.warn,
                 row_bg,
                 sel,
             );
+            if node.is_dir && (cx as usize) < (list.right() as usize) {
+                cx = buf.print(cx, y, "/", th.text, row_bg);
+            }
 
             let path_budget = list.right().saturating_sub(cx + 2) as usize;
             if path_budget > 4 {

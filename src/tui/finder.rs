@@ -1,4 +1,9 @@
 //! Scan-wide fuzzy finder. `std` only — subsequence scoring, no crates.
+//!
+//! Hits are a capped, reused `Vec` (no million-entry index). Match positions
+//! live in a `u64` bitset so a hit is a few words and never heap-allocates.
+
+use std::borrow::Cow;
 
 use crate::classify::Category;
 use crate::scan::{Node, Tree};
@@ -7,18 +12,44 @@ use crate::tui::app::{scroll_to_show, LIST_PAGE};
 /// Hard cap so a million-file home stays snappy.
 pub const RESULT_CAP: usize = 200;
 
-/// One ranked hit. `name_marks` are character indices into `Node::name`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Query chars we bother matching. Longer input is truncated — a 32-letter
+/// needle is already unique on a disk.
+const MAX_Q: usize = 32;
+
+/// Character indices 0..64 in a name. Enough for highlight; scoring still
+/// uses the full (capped) query.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Marks(u64);
+
+impl Marks {
+    pub const EMPTY: Marks = Marks(0);
+
+    pub fn contains(self, i: usize) -> bool {
+        i < 64 && (self.0 >> i) & 1 == 1
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    fn set(&mut self, i: usize) {
+        if i < 64 {
+            self.0 |= 1 << i;
+        }
+    }
+}
+
+/// One ranked hit. Copy, no heap — safe to shuffle while ranking.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FinderHit {
     pub node: usize,
     pub score: i32,
     pub size: u64,
-    pub name_marks: Vec<usize>,
+    pub name_marks: Marks,
 }
 
-/// Live finder state. Query changes rescore; Esc drops the view, not this
-/// buffer, so opening `/` again keeps what you were typing if we reset on open.
-#[derive(Clone, Debug, Default)]
+/// Live finder state. Result and walk vecs keep capacity across keystrokes.
+#[derive(Clone, Debug)]
 pub struct Finder {
     pub query: String,
     pub selected: usize,
@@ -26,6 +57,20 @@ pub struct Finder {
     /// `true` (default): whole scan. `false`: current drill-in directory.
     pub whole_scan: bool,
     pub results: Vec<FinderHit>,
+    scratch: Vec<usize>,
+}
+
+impl Default for Finder {
+    fn default() -> Self {
+        Self {
+            query: String::new(),
+            selected: 0,
+            offset: 0,
+            whole_scan: true,
+            results: Vec::new(),
+            scratch: Vec::new(),
+        }
+    }
 }
 
 impl Finder {
@@ -35,10 +80,19 @@ impl Finder {
         self.offset = 0;
         self.whole_scan = true;
         self.results.clear();
+        self.scratch.clear();
     }
 
     pub fn rescore(&mut self, tree: &Tree, scope: usize, apparent: bool) {
-        self.results = search(tree, scope, &self.query, apparent, RESULT_CAP);
+        search_into(
+            &mut self.results,
+            &mut self.scratch,
+            tree,
+            scope,
+            &self.query,
+            apparent,
+            RESULT_CAP,
+        );
         if self.results.is_empty() {
             self.selected = 0;
             self.offset = 0;
@@ -83,42 +137,6 @@ impl Finder {
     }
 }
 
-/// Tight subsequence score. `None` if `query` is not a subsequence of `text`.
-/// Positions are character indices into `text`. Higher is better.
-pub fn fuzzy(query: &str, text: &str) -> Option<(i32, Vec<usize>)> {
-    if query.is_empty() {
-        return Some((0, Vec::new()));
-    }
-    let t: Vec<char> = text.chars().collect();
-    let q: Vec<char> = query.chars().collect();
-    if q.len() > t.len() {
-        return None;
-    }
-
-    // Forward pass: prove a match exists (leftmost).
-    let mut pos = Vec::with_capacity(q.len());
-    let mut start = 0;
-    for &qc in &q {
-        let want = fold(qc);
-        let found = t[start..].iter().position(|&c| fold(c) == want)?;
-        let i = start + found;
-        pos.push(i);
-        start = i + 1;
-    }
-
-    // Backward pass: pull the match as tight as possible (fzf-style).
-    let mut end = t.len();
-    for qi in (0..q.len()).rev() {
-        let want = fold(q[qi]);
-        let floor = if qi == 0 { 0 } else { pos[qi - 1] + 1 };
-        let found = t[floor..end].iter().rposition(|&c| fold(c) == want)?;
-        pos[qi] = floor + found;
-        end = pos[qi];
-    }
-
-    Some((score_positions(&t, &pos), pos))
-}
-
 fn fold(c: char) -> char {
     if c.is_ascii() {
         c.to_ascii_lowercase()
@@ -131,39 +149,100 @@ fn is_boundary(c: char) -> bool {
     matches!(c, '/' | '\\' | '.' | '-' | '_' | ' ' | ':' | '+' | '@')
 }
 
-fn score_positions(text: &[char], pos: &[usize]) -> i32 {
-    if pos.is_empty() {
+/// Tight subsequence score. `None` if `query` is not a subsequence of `text`.
+pub fn fuzzy(query: &str, text: &str) -> Option<(i32, Marks)> {
+    if query.is_empty() {
+        return Some((0, Marks::EMPTY));
+    }
+    let mut qch = ['\0'; MAX_Q];
+    let mut qn = 0;
+    for c in query.chars() {
+        if qn == MAX_Q {
+            break;
+        }
+        qch[qn] = fold(c);
+        qn += 1;
+    }
+    if qn == 0 {
+        return Some((0, Marks::EMPTY));
+    }
+
+    let mut pos = [0u16; MAX_Q];
+    let mut start = 0usize;
+    for qi in 0..qn {
+        let want = qch[qi];
+        let mut found = None;
+        for (i, c) in text.chars().enumerate().skip(start) {
+            if fold(c) == want {
+                found = Some(i);
+                break;
+            }
+        }
+        let i = found?;
+        pos[qi] = i as u16;
+        start = i + 1;
+    }
+
+    let tlen = text.chars().count();
+    let mut end = tlen;
+    for qi in (0..qn).rev() {
+        let want = qch[qi];
+        let floor = if qi == 0 { 0 } else { pos[qi - 1] as usize + 1 };
+        let mut found = None;
+        for (i, c) in text.chars().enumerate() {
+            if i < floor {
+                continue;
+            }
+            if i >= end {
+                break;
+            }
+            if fold(c) == want {
+                found = Some(i);
+            }
+        }
+        let i = found?;
+        pos[qi] = i as u16;
+        end = i;
+    }
+
+    Some((score_positions(text, &pos, qn), marks_from(&pos, qn)))
+}
+
+fn marks_from(pos: &[u16; MAX_Q], n: usize) -> Marks {
+    let mut m = Marks::EMPTY;
+    for i in 0..n {
+        m.set(pos[i] as usize);
+    }
+    m
+}
+
+fn score_positions(text: &str, pos: &[u16; MAX_Q], n: usize) -> i32 {
+    if n == 0 {
         return 0;
     }
     let mut score = 16;
     score += (32i32.saturating_sub(pos[0] as i32 * 2)).max(0);
-    let span = (pos[pos.len() - 1] - pos[0] + 1) as i32;
+    let span = (pos[n - 1] - pos[0] + 1) as i32;
     score += (64 - span).max(0);
-    let mut run = pos.len() > 1;
-    for w in pos.windows(2) {
-        if w[1] == w[0] + 1 {
+    let mut run = n > 1;
+    for i in 1..n {
+        if pos[i] == pos[i - 1] + 1 {
             score += 24;
         } else {
             run = false;
-            score -= (w[1] - w[0] - 1) as i32;
+            score -= (pos[i] - pos[i - 1] - 1) as i32;
         }
     }
     if run {
         score += 20;
     }
-    for &i in pos {
-        if i == 0 || is_boundary(text[i - 1]) {
+    for i in 0..n {
+        let p = pos[i] as usize;
+        if p == 0 || text.chars().nth(p - 1).is_some_and(is_boundary) {
             score += 12;
         }
     }
     score
-}
-
-fn eq_ci(a: &str, b: &str) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.chars().zip(b.chars()).all(|(x, y)| fold(x) == fold(y))
 }
 
 fn starts_with_ci(text: &str, prefix: &str) -> bool {
@@ -186,36 +265,43 @@ pub fn file_ext(name: &str) -> &str {
     }
 }
 
-fn ext_marks(name: &str, ext: &str) -> Vec<usize> {
-    let chars: Vec<char> = name.chars().collect();
-    let ext_chars: Vec<char> = ext.chars().collect();
-    if ext_chars.is_empty() || chars.len() < ext_chars.len() {
-        return Vec::new();
+fn ext_marks(name: &str, ext: &str) -> Marks {
+    let n = name.chars().count();
+    let e = ext.chars().count();
+    if e == 0 || n < e {
+        return Marks::EMPTY;
     }
-    let start = chars.len() - ext_chars.len();
-    if chars[start..]
-        .iter()
-        .zip(ext_chars.iter())
-        .all(|(&a, &b)| fold(a) == fold(b))
-    {
-        return (start..chars.len()).collect();
+    let start = n - e;
+    let ok = name
+        .chars()
+        .skip(start)
+        .zip(ext.chars())
+        .all(|(a, b)| fold(a) == fold(b));
+    if !ok {
+        return Marks::EMPTY;
     }
-    Vec::new()
+    let mut m = Marks::EMPTY;
+    for i in start..n {
+        m.set(i);
+    }
+    m
 }
 
-/// Category words people actually type. Kept small so the classify hot
-/// path is never involved — this is query-time only.
+/// Category words people actually type. Query-time only — classify stays cheap.
 pub fn category_query(q: &str) -> Option<Category> {
     let q = q.strip_prefix('.').unwrap_or(q);
-    if eq_ci(q, "temp") || eq_ci(q, "tmp") {
+    if q.eq_ignore_ascii_case("temp") || q.eq_ignore_ascii_case("tmp") {
         Some(Category::Temp)
-    } else if eq_ci(q, "cache") || eq_ci(q, "caches") {
+    } else if q.eq_ignore_ascii_case("cache") || q.eq_ignore_ascii_case("caches") {
         Some(Category::Cache)
-    } else if eq_ci(q, "log") || eq_ci(q, "logs") {
+    } else if q.eq_ignore_ascii_case("log") || q.eq_ignore_ascii_case("logs") {
         Some(Category::Log)
-    } else if eq_ci(q, "journal") {
+    } else if q.eq_ignore_ascii_case("journal") {
         Some(Category::Journal)
-    } else if eq_ci(q, "crash") || eq_ci(q, "dump") || eq_ci(q, "coredump") {
+    } else if q.eq_ignore_ascii_case("crash")
+        || q.eq_ignore_ascii_case("dump")
+        || q.eq_ignore_ascii_case("coredump")
+    {
         Some(Category::Crash)
     } else {
         None
@@ -224,15 +310,15 @@ pub fn category_query(q: &str) -> Option<Category> {
 
 /// Score one node against the query. Empty query is a match with score 0
 /// (caller sorts those by size). `path` is a display string, usually the
-/// relative path from the scan root.
-pub fn score_node(query: &str, node: &Node, path: &str) -> Option<(i32, Vec<usize>)> {
+/// node's full path (a suffix of the relative path is enough).
+pub fn score_node(query: &str, node: &Node, path: &str) -> Option<(i32, Marks)> {
     let q = query.trim();
     if q.is_empty() {
-        return Some((0, Vec::new()));
+        return Some((0, Marks::EMPTY));
     }
 
-    let mut best: Option<(i32, Vec<usize>)> = None;
-    let consider = |best: &mut Option<(i32, Vec<usize>)>, score: i32, marks: Vec<usize>| {
+    let mut best: Option<(i32, Marks)> = None;
+    let consider = |best: &mut Option<(i32, Marks)>, score: i32, marks: Marks| {
         if best.as_ref().map_or(true, |(s, _)| score > *s) {
             *best = Some((score, marks));
         }
@@ -240,7 +326,7 @@ pub fn score_node(query: &str, node: &Node, path: &str) -> Option<(i32, Vec<usiz
 
     if let Some((s, pos)) = fuzzy(q, &node.name) {
         let mut score = s + 30;
-        if eq_ci(&node.name, q) {
+        if node.name.eq_ignore_ascii_case(q) {
             score += 40;
         } else if starts_with_ci(&node.name, q) {
             score += 20;
@@ -251,7 +337,7 @@ pub fn score_node(query: &str, node: &Node, path: &str) -> Option<(i32, Vec<usiz
     let ext = file_ext(&node.name);
     if !ext.is_empty() {
         let q_ext = q.strip_prefix('.').unwrap_or(q);
-        if eq_ci(ext, q_ext) {
+        if ext.eq_ignore_ascii_case(q_ext) {
             consider(&mut best, 90, ext_marks(&node.name, ext));
         } else if let Some((s, _)) = fuzzy(q_ext, ext) {
             consider(&mut best, s + 50, ext_marks(&node.name, ext));
@@ -260,39 +346,51 @@ pub fn score_node(query: &str, node: &Node, path: &str) -> Option<(i32, Vec<usiz
 
     if let Some(cat) = category_query(q) {
         if node.category == cat {
-            consider(&mut best, 85, Vec::new());
+            consider(&mut best, 85, Marks::EMPTY);
         }
     } else if node.category.is_waste() {
         if let Some((s, _)) = fuzzy(q, node.category.as_str()) {
-            consider(&mut best, s + 40, Vec::new());
+            consider(&mut best, s + 40, Marks::EMPTY);
         }
-        if let Some((s, _)) = fuzzy(q, node.category.label()) {
-            consider(&mut best, s + 40, Vec::new());
+        if node.category.label() != node.category.as_str() {
+            if let Some((s, _)) = fuzzy(q, node.category.label()) {
+                consider(&mut best, s + 40, Marks::EMPTY);
+            }
         }
     }
 
     if let Some((s, _)) = fuzzy(q, path) {
-        // Path is a weaker field; keep name marks if we already have them.
-        let marks = best.as_ref().map(|(_, m)| m.clone()).unwrap_or_default();
+        let marks = best.map(|(_, m)| m).unwrap_or(Marks::EMPTY);
         consider(&mut best, s + 10, marks);
     }
 
     best
 }
 
-pub fn relative_path(tree: &Tree, id: usize) -> String {
+/// Path shown in the result list. Only called for visible rows.
+pub fn relative_path(tree: &Tree, id: usize) -> Cow<'_, str> {
     let root = &tree.root_node().path;
     let path = &tree.get(id).path;
-    path.strip_prefix(root)
-        .map(|p| {
-            let s = p.to_string_lossy();
-            if s.is_empty() {
-                tree.get(id).name.clone()
+    match path.strip_prefix(root) {
+        Ok(rel) if !rel.as_os_str().is_empty() => {
+            let s = rel.to_string_lossy();
+            if cfg!(windows) && s.contains('\\') {
+                Cow::Owned(s.replace('\\', "/"))
             } else {
-                s.replace('\\', "/")
+                s
             }
-        })
-        .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/"))
+        }
+        _ => {
+            let s = path.to_string_lossy();
+            if s.is_empty() {
+                Cow::Borrowed(tree.get(id).name.as_str())
+            } else if cfg!(windows) && s.contains('\\') {
+                Cow::Owned(s.into_owned().replace('\\', "/"))
+            } else {
+                s
+            }
+        }
+    }
 }
 
 fn better(a: &FinderHit, b: &FinderHit) -> bool {
@@ -318,27 +416,31 @@ fn push_top(hits: &mut Vec<FinderHit>, hit: FinderHit, cap: usize) {
     }
 }
 
-/// Walk `scope` (exclusive — the directory itself is not a hit) and rank
-/// every descendant. Empty query: largest `cap` nodes, size descending.
-pub fn search(
+fn search_into(
+    hits: &mut Vec<FinderHit>,
+    stack: &mut Vec<usize>,
     tree: &Tree,
     scope: usize,
     query: &str,
     apparent: bool,
     cap: usize,
-) -> Vec<FinderHit> {
+) {
+    hits.clear();
+    stack.clear();
     if cap == 0 || scope >= tree.nodes.len() {
-        return Vec::new();
+        return;
     }
-    let mut hits = Vec::with_capacity(cap.min(64));
-    let mut stack = tree.get(scope).children.clone();
+    if hits.capacity() < cap {
+        hits.reserve(cap - hits.capacity());
+    }
+    stack.extend_from_slice(&tree.get(scope).children);
     while let Some(id) = stack.pop() {
         let node = tree.get(id);
         stack.extend_from_slice(&node.children);
-        let path = relative_path(tree, id);
-        if let Some((score, name_marks)) = score_node(query, node, &path) {
+        let path = node.path.to_string_lossy();
+        if let Some((score, name_marks)) = score_node(query, node, path.as_ref()) {
             push_top(
-                &mut hits,
+                hits,
                 FinderHit {
                     node: id,
                     score,
@@ -355,6 +457,20 @@ pub fn search(
             .then_with(|| b.size.cmp(&a.size))
             .then_with(|| a.node.cmp(&b.node))
     });
+}
+
+/// Walk `scope` (exclusive — the directory itself is not a hit) and rank
+/// every descendant. Empty query: largest `cap` nodes, size descending.
+pub fn search(
+    tree: &Tree,
+    scope: usize,
+    query: &str,
+    apparent: bool,
+    cap: usize,
+) -> Vec<FinderHit> {
+    let mut hits = Vec::new();
+    let mut stack = Vec::new();
+    search_into(&mut hits, &mut stack, tree, scope, query, apparent, cap);
     hits
 }
 
@@ -400,6 +516,10 @@ mod tests {
         }
     }
 
+    fn marks_has(m: Marks, idx: &[usize]) -> bool {
+        idx.iter().all(|&i| m.contains(i))
+    }
+
     /// root / movie.mp4(5000) / notes.txt(100) / cache/thumb(8000) / deep/iso.iso(3000)
     fn sample_tree() -> Tree {
         let mut tree = Tree {
@@ -440,7 +560,7 @@ mod tests {
 
     #[test]
     fn empty_query_is_a_match() {
-        assert_eq!(fuzzy("", "anything"), Some((0, vec![])));
+        assert_eq!(fuzzy("", "anything"), Some((0, Marks::EMPTY)));
     }
 
     #[test]
@@ -450,8 +570,9 @@ mod tests {
 
     #[test]
     fn tightens_to_the_extension() {
-        let (score, pos) = fuzzy("mp4", "movie.mp4").unwrap();
-        assert_eq!(pos, vec![6, 7, 8], "prefer the consecutive tail");
+        let (score, marks) = fuzzy("mp4", "movie.mp4").unwrap();
+        assert!(marks_has(marks, &[6, 7, 8]), "prefer the consecutive tail");
+        assert!(!marks.contains(5));
         let loose = fuzzy("mp4", "m-extra-p-extra-4").unwrap();
         assert!(
             score > loose.0,
@@ -481,8 +602,8 @@ mod tests {
 
     #[test]
     fn case_insensitive_ascii() {
-        let (s, pos) = fuzzy("Rings", "rings").unwrap();
-        assert_eq!(pos, vec![0, 1, 2, 3, 4]);
+        let (s, marks) = fuzzy("Rings", "rings").unwrap();
+        assert!(marks_has(marks, &[0, 1, 2, 3, 4]));
         assert!(s > 0);
     }
 
@@ -540,7 +661,7 @@ mod tests {
                 "query {q:?} should prefer the mp4"
             );
             assert!(
-                hits[0].name_marks.windows(3).any(|w| w == [6, 7, 8]),
+                marks_has(hits[0].name_marks, &[6, 7, 8]),
                 "query {q:?} should mark the extension, got {:?}",
                 hits[0].name_marks
             );
@@ -619,5 +740,10 @@ mod tests {
         assert!(f.query.is_empty());
         f.toggle_scope();
         assert!(!f.whole_scan);
+    }
+
+    #[test]
+    fn default_scope_is_whole_scan() {
+        assert!(Finder::default().whole_scan);
     }
 }
